@@ -1,361 +1,354 @@
 /**
- * System Map data contract (v1).
+ * System Map data contract (v1), as Effect Schemas.
  *
- * One schema definition, built in two modes:
- * - `loose`: unknown keys are kept. Used to accept data and to publish the JSON Schema.
- * - `strict`: unknown keys fail. Used only to report unknown keys as warnings.
+ * One definition, built in two modes:
+ * - `loose`: unknown keys are kept. Used to accept data and to type the model.
+ * - `strict`: plain structs, decoded with `onExcessProperty: "error"` only to report unknown
+ *   keys as warnings. Also the source of the published JSON Schema (structs stay open there).
  */
-import { z } from 'zod';
-import { STACK_COLORS } from './model.js';
+import { Schema } from 'effect';
+import { STACK_COLORS } from './constants.js';
+
+export {
+  CALL_KINDS,
+  EXPOSURES,
+  NODE_KINDS,
+  PORT_AUTH,
+  ROUTE_AUTH,
+  ROUTE_VIA,
+  SERVICE_AUTH,
+  SERVICE_KINDS,
+  STATUSES,
+} from './constants.js';
+import {
+  CALL_KINDS,
+  EXPOSURES,
+  NODE_KINDS,
+  PORT_AUTH,
+  ROUTE_AUTH,
+  ROUTE_VIA,
+  SERVICE_AUTH,
+  SERVICE_KINDS,
+  STATUSES,
+} from './constants.js';
 
 export const ID_PATTERN = '^[a-z0-9]+(?:-[a-z0-9]+)*$';
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const ISO_DATE_PATTERN =
-  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
-
-export const STATUSES = ['running', 'stopped', 'deliberately-stopped', 'retired'] as const;
-export const NODE_KINDS = [
-  'internet',
-  'cdn',
-  'router',
-  'host',
-  'vm',
-  'lxc',
-  'device',
-  'external',
-  'storage',
-  'vpn',
-] as const;
-export const SERVICE_KINDS = [
-  'container',
-  'compose',
-  'systemd',
-  'native',
-  'timer',
-  'cron',
-  'worker',
-  'external',
-  'vm-app',
-] as const;
-export const PORT_AUTH = ['none', 'own', 'token', 'authelia', 'mtls', 'key'] as const;
-export const EXPOSURES = ['internal', 'lan', 'restricted', 'public'] as const;
-export const SERVICE_AUTH = ['authelia', 'own', 'token', 'oidc', 'mtls', 'key', 'none'] as const;
-export const ROUTE_VIA = ['traefik', 'cloudflare-worker', 'router-forward', 'plex'] as const;
-export const ROUTE_AUTH = ['authelia', 'none', 'app', 'key'] as const;
-/** `observe`: dashboards and monitors reading another app; drawn faint in the Apps graph. */
-export const CALL_KINDS = ['use', 'observe'] as const;
+  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/u;
 
 export type SchemaMode = 'strict' | 'loose';
 
+/** Unknown keys of a loose struct. */
+const Rest = Schema.Record(Schema.String, Schema.Unknown);
+
+const isHttpUrl = (s: string) => {
+  if (!URL.canParse(s)) return false;
+  const { protocol } = new URL(s);
+  return protocol === 'http:' || protocol === 'https:';
+};
+
 export function buildSchemas(mode: SchemaMode) {
   // Both modes share one static type (the loose one); only runtime behaviour differs.
-  const obj = <S extends z.ZodRawShape>(shape: S) =>
-    (mode === 'strict' ? z.strictObject(shape) : z.looseObject(shape)) as unknown as z.ZodObject<
-      S,
-      z.core.$loose
+  const obj = <F extends Schema.Struct.Fields>(fields: F) =>
+    (mode === 'strict'
+      ? Schema.Struct(fields)
+      : Schema.StructWithRest(Schema.Struct(fields), [Rest])) as unknown as Schema.StructWithRest<
+      Schema.Struct<F>,
+      readonly [typeof Rest]
     >;
+  const opt = Schema.optionalKey;
 
-  const str = z.string();
-  const md = z.string().meta({ description: 'Markdown' });
-  const id = z.string().regex(new RegExp(ID_PATTERN), 'must be kebab-case (a-z, 0-9, -)');
-  const ref = z.string().min(1).meta({ description: 'Entity id' });
-  const refs = z.array(ref);
-  const date = z.string().regex(DATE_PATTERN, 'must be a YYYY-MM-DD date');
-  const isoDate = z.string().regex(ISO_DATE_PATTERN, 'must be an ISO date');
-  const httpUrl = z.url({ protocol: /^https?$/, error: 'must be an http(s) URL' });
-  const portNumber = z.int().min(0).max(65535);
-  const portSpec = z.union([portNumber, z.string().regex(/^\d{1,5}(?:-\d{1,5})?$/)]);
-  const status = z.enum(STATUSES);
-  const stringMap = z.record(z.string(), z.string());
-  const secrets = z.array(obj({ path: str, purpose: str.optional() })).meta({
+  const str = Schema.String;
+  const md = Schema.String.annotate({ description: 'Markdown' });
+  const pattern = (re: RegExp, message: string) =>
+    Schema.String.check(Schema.isPattern(re, { message }));
+  const id = pattern(new RegExp(ID_PATTERN, 'u'), 'must be kebab-case (a-z, 0-9, -)');
+  const nonEmpty = Schema.String.check(Schema.isMinLength(1));
+  const ref = nonEmpty.annotate({ description: 'Entity id' });
+  const refs = Schema.Array(ref);
+  const date = pattern(DATE_PATTERN, 'must be a YYYY-MM-DD date');
+  const isoDate = pattern(ISO_DATE_PATTERN, 'must be an ISO date');
+  const httpUrl = Schema.String.check(
+    Schema.makeFilter(isHttpUrl, {
+      message: 'must be an http(s) URL',
+      toJsonSchema: () => ({ format: 'uri' }),
+    }),
+  );
+  const int = Schema.Int;
+  const num = Schema.Finite;
+  const bool = Schema.Boolean;
+  const portNumber = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }));
+  const portSpec = Schema.Union([
+    portNumber,
+    pattern(/^\d{1,5}(?:-\d{1,5})?$/u, 'must be a port or range'),
+  ]);
+  const status = Schema.Literals(STATUSES);
+  const stringMap = Schema.Record(Schema.String, Schema.String);
+  const secrets = Schema.Array(obj({ path: str, purpose: opt(str) })).annotate({
     description: 'Secret locations only, never values',
   });
 
   const base = {
     id,
-    name: str.optional(),
-    description: str.optional(),
-    notes: md.optional(),
-    tags: z.array(str).optional(),
-    links: z.array(obj({ label: str.optional(), url: httpUrl })).optional(),
+    name: opt(str),
+    description: opt(str),
+    notes: opt(md),
+    tags: opt(Schema.Array(str)),
+    links: opt(Schema.Array(obj({ label: opt(str), url: httpUrl }))),
   };
 
   const meta = obj({
-    title: str.optional(),
-    owner: str.optional(),
-    domain: str.optional(),
-    timezone: str.optional(),
-    updated: isoDate.optional(),
-    description: str.optional(),
-    conventions: md.optional().meta({ description: 'Markdown: conventions for editing this data' }),
+    title: opt(str),
+    owner: opt(str),
+    domain: opt(str),
+    timezone: opt(str),
+    updated: opt(isoDate),
+    description: opt(str),
+    conventions: opt(
+      Schema.String.annotate({ description: 'Markdown: conventions for editing this data' }),
+    ),
   });
 
   const policy = obj({
     ...base,
     title: str,
     rule: md,
-    why: md.optional(),
-    since: date.optional(),
-    scope: refs.optional(),
+    why: opt(md),
+    since: opt(date),
+    scope: opt(refs),
   });
 
-  const procedure = obj({ ...base, title: str, applies_to: refs.optional(), body: md });
+  const procedure = obj({ ...base, title: str, applies_to: opt(refs), body: md });
 
   const zone = obj({
     ...base,
     domain: str,
-    provider: str.optional(),
-    plan: str.optional(),
-    records: z
-      .array(
-        obj({
-          name: str,
-          type: str,
-          value: str.optional(),
-          proxied: z.boolean().optional(),
-        }),
-      )
-      .optional(),
-    settings: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
-    rules: z
-      .array(
-        obj({
-          kind: str.optional(),
-          expression: str.optional(),
-          action: str.optional(),
-          note: str.optional(),
-        }),
-      )
-      .optional(),
-    workers: z
-      .array(obj({ route: str.optional(), script: str.optional(), purpose: str.optional() }))
-      .optional(),
+    provider: opt(str),
+    plan: opt(str),
+    records: opt(Schema.Array(obj({ name: str, type: str, value: opt(str), proxied: opt(bool) }))),
+    settings: opt(Schema.Record(Schema.String, Schema.Union([str, num, bool]))),
+    rules: opt(
+      Schema.Array(obj({ kind: opt(str), expression: opt(str), action: opt(str), note: opt(str) })),
+    ),
+    workers: opt(Schema.Array(obj({ route: opt(str), script: opt(str), purpose: opt(str) }))),
   });
 
   const network = obj({
     ...base,
-    cidr: str.optional(),
-    gateway: str.optional(),
-    dns: z.array(str).optional(),
-    dhcp: z.union([z.boolean(), str]).optional(),
-    vlan: z.int().optional(),
+    cidr: opt(str),
+    gateway: opt(str),
+    dns: opt(Schema.Array(str)),
+    dhcp: opt(Schema.Union([bool, str])),
+    vlan: opt(int),
   });
 
   const firewallRule = obj({
-    action: str.optional(),
-    direction: str.optional(),
-    source: str.optional(),
-    dest: str.optional(),
-    proto: str.optional(),
-    port: z.union([portNumber, str]).optional(),
-    comment: str.optional(),
+    action: opt(str),
+    direction: opt(str),
+    source: opt(str),
+    dest: opt(str),
+    proto: opt(str),
+    port: opt(Schema.Union([portNumber, str])),
+    comment: opt(str),
   });
 
   const node = obj({
     ...base,
-    kind: z.enum(NODE_KINDS),
-    parent: ref.optional(),
-    vmid: z.int().optional(),
-    status: status.optional(),
-    os: str.optional(),
-    hostname: str.optional(),
-    ips: z.array(str).optional(),
-    mac: str.optional(),
-    network: ref.optional(),
-    resources: obj({
-      cores: z.number().optional(),
-      memory_mib: z.int().optional(),
-      swap_mib: z.int().optional(),
-      disk_gib: z.number().optional(),
-      disk_storage: str.optional(),
-    }).optional(),
-    privileged: z.boolean().optional(),
-    autostart: z.boolean().optional(),
-    features: z.array(str).optional(),
-    mounts: z
-      .array(
+    kind: Schema.Literals(NODE_KINDS),
+    parent: opt(ref),
+    vmid: opt(int),
+    status: opt(status),
+    os: opt(str),
+    hostname: opt(str),
+    ips: opt(Schema.Array(str)),
+    mac: opt(str),
+    network: opt(ref),
+    resources: opt(
+      obj({
+        cores: opt(num),
+        memory_mib: opt(int),
+        swap_mib: opt(int),
+        disk_gib: opt(num),
+        disk_storage: opt(str),
+      }),
+    ),
+    privileged: opt(bool),
+    autostart: opt(bool),
+    features: opt(Schema.Array(str)),
+    mounts: opt(
+      Schema.Array(
         obj({
-          source: str.optional(),
-          target: str.optional(),
-          readonly: z.boolean().optional(),
-          backup: z.boolean().optional(),
-          purpose: str.optional(),
-          storage: ref.optional(),
+          source: opt(str),
+          target: opt(str),
+          readonly: opt(bool),
+          backup: opt(bool),
+          purpose: opt(str),
+          storage: opt(ref),
         }),
-      )
-      .optional(),
-    devices: z
-      .array(obj({ source: str.optional(), target: str.optional(), purpose: str.optional() }))
-      .optional(),
-    backup: obj({
-      included: z.boolean().optional(),
-      job: str.optional(),
-      notes: md.optional(),
-    }).optional(),
-    firewall: obj({
-      enabled: z.boolean().optional(),
-      nic_flag: z.boolean().optional(),
-      policy_in: str.optional(),
-      policy_out: str.optional(),
-      rules: z.array(firewallRule).optional(),
-      file: str.optional(),
-      notes: md.optional(),
-    }).optional(),
-    update: obj({
-      command: str.optional(),
-      source: str.optional(),
-      notes: md.optional(),
-    }).optional(),
-    hardware: obj({
-      cpu: str.optional(),
-      ram: str.optional(),
-      disks: z
-        .array(
-          obj({
-            device: str.optional(),
-            model: str.optional(),
-            size: str.optional(),
-            role: str.optional(),
-          }),
-        )
-        .optional(),
-    }).optional(),
-    paths: stringMap.optional(),
-    secrets: secrets.optional(),
+      ),
+    ),
+    devices: opt(Schema.Array(obj({ source: opt(str), target: opt(str), purpose: opt(str) }))),
+    backup: opt(obj({ included: opt(bool), job: opt(str), notes: opt(md) })),
+    firewall: opt(
+      obj({
+        enabled: opt(bool),
+        nic_flag: opt(bool),
+        policy_in: opt(str),
+        policy_out: opt(str),
+        rules: opt(Schema.Array(firewallRule)),
+        file: opt(str),
+        notes: opt(md),
+      }),
+    ),
+    update: opt(obj({ command: opt(str), source: opt(str), notes: opt(md) })),
+    hardware: opt(
+      obj({
+        cpu: opt(str),
+        ram: opt(str),
+        disks: opt(
+          Schema.Array(obj({ device: opt(str), model: opt(str), size: opt(str), role: opt(str) })),
+        ),
+      }),
+    ),
+    paths: opt(stringMap),
+    secrets: opt(secrets),
   });
 
   const service = obj({
     ...base,
     name: str,
     node: ref,
-    kind: z.enum(SERVICE_KINDS),
-    status: status.optional(),
-    image: str.optional(),
-    version: z.union([str, z.number()]).optional(),
-    pin: str.optional(),
-    ports: z
-      .array(
+    kind: Schema.Literals(SERVICE_KINDS),
+    status: opt(status),
+    image: opt(str),
+    version: opt(Schema.Union([str, num])),
+    pin: opt(str),
+    ports: opt(
+      Schema.Array(
         obj({
           port: portSpec,
-          proto: z.enum(['tcp', 'udp']).optional(),
-          bind: str.optional(),
-          auth: z.enum(PORT_AUTH).optional(),
-          exposure: z.enum(EXPOSURES).optional(),
-          purpose: str.optional(),
+          proto: opt(Schema.Literals(['tcp', 'udp'])),
+          bind: opt(str),
+          auth: opt(Schema.Literals(PORT_AUTH)),
+          exposure: opt(Schema.Literals(EXPOSURES)),
+          purpose: opt(str),
         }),
-      )
-      .optional(),
-    urls: z
-      .array(obj({ label: str.optional(), url: httpUrl, internal: z.boolean().optional() }))
-      .optional(),
-    auth: z.enum(SERVICE_AUTH).optional(),
-    stack: ref
-      .optional()
-      .meta({ description: 'Stack id (`stacks[].id`), groups apps in the graph' }),
-    calls: z
-      .array(
+      ),
+    ),
+    urls: opt(Schema.Array(obj({ label: opt(str), url: httpUrl, internal: opt(bool) }))),
+    auth: opt(Schema.Literals(SERVICE_AUTH)),
+    stack: opt(ref.annotate({ description: 'Stack id (`stacks[].id`), groups apps in the graph' })),
+    calls: opt(
+      Schema.Array(
         obj({
-          target: str.min(1).meta({ description: 'Entity id or an external label' }),
-          via: str.optional(),
-          port: portSpec.optional(),
-          purpose: str.optional(),
-          kind: z.enum(CALL_KINDS).optional().meta({
-            description:
-              'use (default) or observe: a dashboard or monitor reading the target; drawn faint and ignored for layout',
-          }),
+          target: nonEmpty.annotate({ description: 'Entity id or an external label' }),
+          via: opt(str),
+          port: opt(portSpec),
+          purpose: opt(str),
+          kind: opt(
+            Schema.Literals(CALL_KINDS).annotate({
+              description:
+                'use (default) or observe: a dashboard or monitor reading the target; drawn faint and ignored for layout',
+            }),
+          ),
         }),
-      )
-      .optional(),
-    health: obj({ kuma: refs.optional(), push: z.boolean().optional() }).optional(),
-    logs: obj({
-      dozzle: obj({
-        host: str.min(1).meta({ description: 'Dozzle agent/host name' }),
-        container: str.min(1).meta({ description: 'Container name' }),
-      }).optional(),
-    }).optional(),
-    paths: stringMap.optional(),
-    secrets: secrets.optional(),
-    schedule: str.optional(),
-    backup: obj({ how: str.optional(), where: str.optional() }).optional(),
-    update: obj({ command: str.optional(), notes: md.optional() }).optional(),
+      ),
+    ),
+    health: opt(obj({ kuma: opt(refs), push: opt(bool) })),
+    logs: opt(
+      obj({
+        dozzle: opt(
+          obj({
+            host: nonEmpty.annotate({ description: 'Dozzle agent/host name' }),
+            container: nonEmpty.annotate({ description: 'Container name' }),
+          }),
+        ),
+      }),
+    ),
+    paths: opt(stringMap),
+    secrets: opt(secrets),
+    schedule: opt(str),
+    backup: opt(obj({ how: opt(str), where: opt(str) })),
+    update: opt(obj({ command: opt(str), notes: opt(md) })),
   });
 
   const stack = obj({
     ...base,
-    color: z.enum(STACK_COLORS).optional().meta({ description: 'Tint of the group box' }),
-    order: z
-      .int()
-      .optional()
-      .meta({ description: 'Sort key for stacks; lower first, then file order' }),
+    color: opt(Schema.Literals(STACK_COLORS).annotate({ description: 'Tint of the group box' })),
+    order: opt(int.annotate({ description: 'Sort key for stacks; lower first, then file order' })),
   });
 
   const route = obj({
     ...base,
-    host: str.min(1),
-    paths: z
-      .array(str)
-      .optional()
-      .meta({ description: 'Path prefixes or Traefik rule strings, e.g. HostRegexp(...)' }),
-    via: z.enum(ROUTE_VIA),
+    host: nonEmpty,
+    paths: opt(
+      Schema.Array(str).annotate({
+        description: 'Path prefixes or Traefik rule strings, e.g. HostRegexp(...)',
+      }),
+    ),
+    via: Schema.Literals(ROUTE_VIA),
     target: ref,
-    upstream: str.optional(),
-    auth: z.enum(ROUTE_AUTH).optional(),
-    middlewares: z.array(str).optional(),
+    upstream: opt(str),
+    auth: opt(Schema.Literals(ROUTE_AUTH)),
+    middlewares: opt(Schema.Array(str)),
   });
 
   const monitor = obj({
     ...base,
-    kuma_id: z.int().min(0),
+    kuma_id: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     name: str,
-    type: str.optional(),
-    target: str.optional(),
-    service: ref.optional(),
-    node: ref
-      .optional()
-      .meta({ description: 'Node id, for host ping monitors (instead of service)' }),
-    group: str.optional(),
-    active: z.boolean().optional().meta({ description: 'Defaults to true' }),
-    interval_s: z.int().min(1).optional(),
-  })
-    .refine((m) => m.service === undefined || m.node === undefined, {
-      message: 'set either `service` or `node`, not both',
-      path: ['node'],
-    })
-    // Same rule for editors (zod refinements do not reach the JSON Schema).
-    .meta({ not: { required: ['service', 'node'] } });
+    type: opt(str),
+    target: opt(str),
+    service: opt(ref),
+    node: opt(
+      ref.annotate({ description: 'Node id, for host ping monitors (instead of service)' }),
+    ),
+    group: opt(str),
+    active: opt(bool.annotate({ description: 'Defaults to true' })),
+    interval_s: opt(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  }).check(
+    Schema.makeFilter(
+      (m: { service?: string; node?: string }) =>
+        m.service === undefined || m.node === undefined
+          ? undefined
+          : { path: ['node'], issue: 'set either `service` or `node`, not both' },
+      { toJsonSchema: () => ({ not: { required: ['service', 'node'] } }) },
+    ),
+  );
 
   const job = obj({
     ...base,
     node: ref,
-    schedule: str.min(1),
-    command: str.optional(),
-    source: str.optional(),
-    purpose: str.optional(),
-    notifies: z.union([z.boolean(), str]).optional(),
+    schedule: nonEmpty,
+    command: opt(str),
+    source: opt(str),
+    purpose: opt(str),
+    notifies: opt(Schema.Union([bool, str])),
   });
 
   const backup = obj({
     ...base,
-    what: str.min(1),
-    from: refs.optional(),
-    to: str.min(1),
-    schedule: str.optional(),
-    retention: str.optional(),
-    offsite: z.boolean().optional(),
-    encrypted: z.boolean().optional(),
-    restore: md.optional(),
+    what: nonEmpty,
+    from: opt(refs),
+    to: nonEmpty,
+    schedule: opt(str),
+    retention: opt(str),
+    offsite: opt(bool),
+    encrypted: opt(bool),
+    restore: opt(md),
   });
 
   const history = obj({
     ...base,
     date,
     title: str,
-    summary: md.optional(),
-    refs: refs.optional(),
-    rollback: md.optional(),
+    summary: opt(md),
+    refs: opt(refs),
+    rollback: opt(md),
   });
 
-  const openQuestion = obj({ ...base, question: str.min(1), refs: refs.optional() });
+  const openQuestion = obj({ ...base, question: nonEmpty, refs: opt(refs) });
 
   const sections = {
     policies: policy,
@@ -375,24 +368,25 @@ export function buildSchemas(mode: SchemaMode) {
 
   /** Shape of one data file. One file (normally the one with `meta`) declares `version: 1`. */
   const file = obj({
-    version: z
-      .literal(1)
-      .optional()
-      .meta({ description: 'Required in at least one file (normally the one with meta)' }),
-    meta: meta.optional(),
-    policies: z.array(policy).optional(),
-    procedures: z.array(procedure).optional(),
-    zones: z.array(zone).optional(),
-    networks: z.array(network).optional(),
-    nodes: z.array(node).optional(),
-    services: z.array(service).optional(),
-    stacks: z.array(stack).optional(),
-    routes: z.array(route).optional(),
-    monitors: z.array(monitor).optional(),
-    jobs: z.array(job).optional(),
-    backups: z.array(backup).optional(),
-    history: z.array(history).optional(),
-    open_questions: z.array(openQuestion).optional(),
+    version: opt(
+      Schema.Literal(1).annotate({
+        description: 'Required in at least one file (normally the one with meta)',
+      }),
+    ),
+    meta: opt(meta),
+    policies: opt(Schema.Array(policy)),
+    procedures: opt(Schema.Array(procedure)),
+    zones: opt(Schema.Array(zone)),
+    networks: opt(Schema.Array(network)),
+    nodes: opt(Schema.Array(node)),
+    services: opt(Schema.Array(service)),
+    stacks: opt(Schema.Array(stack)),
+    routes: opt(Schema.Array(route)),
+    monitors: opt(Schema.Array(monitor)),
+    jobs: opt(Schema.Array(job)),
+    backups: opt(Schema.Array(backup)),
+    history: opt(Schema.Array(history)),
+    open_questions: opt(Schema.Array(openQuestion)),
   });
 
   return { meta, sections, file };
@@ -405,27 +399,34 @@ type Sections = typeof looseSchemas.sections;
 export type SectionKey = keyof Sections;
 export const SECTION_KEYS = Object.keys(looseSchemas.sections) as SectionKey[];
 
-export type Meta = z.infer<typeof looseSchemas.meta>;
-export type Policy = z.infer<Sections['policies']>;
-export type Procedure = z.infer<Sections['procedures']>;
-export type Zone = z.infer<Sections['zones']>;
-export type Network = z.infer<Sections['networks']>;
-export type SystemNode = z.infer<Sections['nodes']>;
-export type Service = z.infer<Sections['services']>;
-export type Stack = z.infer<Sections['stacks']>;
-export type Route = z.infer<Sections['routes']>;
-export type Monitor = z.infer<Sections['monitors']>;
-export type Job = z.infer<Sections['jobs']>;
-export type Backup = z.infer<Sections['backups']>;
-export type HistoryEntry = z.infer<Sections['history']>;
-export type OpenQuestion = z.infer<Sections['open_questions']>;
-export type SectionItem<K extends SectionKey> = z.infer<Sections[K]>;
+export type Meta = typeof looseSchemas.meta.Type;
+export type Policy = Sections['policies']['Type'];
+export type Procedure = Sections['procedures']['Type'];
+export type Zone = Sections['zones']['Type'];
+export type Network = Sections['networks']['Type'];
+export type SystemNode = Sections['nodes']['Type'];
+export type Service = Sections['services']['Type'];
+export type Stack = Sections['stacks']['Type'];
+export type Route = Sections['routes']['Type'];
+export type Monitor = Sections['monitors']['Type'];
+export type Job = Sections['jobs']['Type'];
+export type Backup = Sections['backups']['Type'];
+export type HistoryEntry = Sections['history']['Type'];
+export type OpenQuestion = Sections['open_questions']['Type'];
+export type SectionItem<K extends SectionKey> = Sections[K]['Type'];
 export type AnyEntity = SectionItem<SectionKey>;
 
+export const SCHEMA_ID =
+  'https://github.com/mrRedSun/system-map/blob/main/schema/system-map.schema.json';
+
+/** The published JSON Schema (draft 2020-12) of one data file; open to unknown keys. */
 export function toJsonSchema(): Record<string, unknown> {
+  const doc = Schema.toJsonSchemaDocument(strictSchemas.file);
   return {
-    ...z.toJSONSchema(looseSchemas.file, { target: 'draft-2020-12', unrepresentable: 'any' }),
-    $id: 'https://github.com/mrRedSun/system-map/blob/main/schema/system-map.schema.json',
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    ...doc.schema,
+    ...(Object.keys(doc.definitions).length > 0 ? { $defs: doc.definitions } : {}),
+    $id: SCHEMA_ID,
     title: 'System Map data file (v1)',
   };
 }

@@ -1,8 +1,19 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { KumaClient, kumaHealth, parsePrometheus } from '../src/server/kuma.js';
+import { NodeServices } from '@effect/platform-node';
+import { assert, describe, it } from '@effect/vitest';
+import { Duration, Effect, Fiber, Layer } from 'effect';
+import { FetchHttpClient } from 'effect/http';
+import { TestClock } from 'effect/testing';
+import { afterEach, expect, vi } from 'vitest';
+import {
+  errorBackoff,
+  kumaHealth,
+  makeKuma,
+  parsePrometheus,
+  type KumaOptions,
+} from '../src/server/kuma.js';
 
 // Shapes taken from Uptime Kuma 2.5 /metrics output.
 const METRICS = `# HELP monitor_status Monitor Status (1 = UP, 0= DOWN, 2= PENDING, 3= MAINTENANCE)
@@ -41,7 +52,7 @@ describe('Kuma metrics', () => {
   });
 });
 
-describe('KumaClient', () => {
+describe('Kuma client', () => {
   let dir: string | undefined;
   afterEach(() => {
     if (dir) rmSync(dir, { recursive: true, force: true });
@@ -49,109 +60,139 @@ describe('KumaClient', () => {
   });
 
   const ok = () => new Response(METRICS, { status: 200 });
+  type FetchArgs = [string | URL | Request, RequestInit | undefined];
+  const urlOf = (call: unknown) => String((call as FetchArgs)[0]);
+  const authOf = (call: unknown) =>
+    new Headers((call as FetchArgs)[1]?.headers).get('authorization') ?? undefined;
 
-  it('fetches /metrics without auth when no key file is set, and caches', async () => {
-    const fetchMock = vi.fn(async () => ok());
-    let now = 0;
-    const kuma = new KumaClient({
-      url: new URL('http://kuma:3001/'),
-      fetch: fetchMock as typeof fetch,
-      now: () => now,
-    });
-    const [a, b] = await Promise.all([kuma.get(), kuma.get()]);
-    expect(a).toBe(b);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(url.href).toBe('http://kuma:3001/metrics');
-    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
-    expect((a['1'] as { status: string }).status).toBe('up');
+  /** A Kuma health source whose HTTP goes to `fetch`. */
+  const kuma = (fetch: (...args: FetchArgs) => Promise<Response>, o: Partial<KumaOptions> = {}) =>
+    makeKuma({ url: new URL('http://kuma:3001/'), ...o }).pipe(
+      Effect.provide(
+        FetchHttpClient.layer.pipe(
+          Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch as typeof globalThis.fetch)),
+        ),
+      ),
+      Effect.provide(NodeServices.layer),
+    );
 
-    now = 29_000;
-    await kuma.get();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    now = 31_000;
-    await kuma.get();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
+  it.effect('fetches /metrics without auth when no key file is set, and caches for 30 s', () =>
+    Effect.gen(function* () {
+      const fetchMock = vi.fn(async () => ok());
+      const health = yield* kuma(fetchMock);
+      const [a, b] = yield* Effect.all([health.get, health.get], { concurrency: 'unbounded' });
+      assert.strictEqual(a, b);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      assert.strictEqual(urlOf(fetchMock.mock.calls[0]), 'http://kuma:3001/metrics');
+      assert.isUndefined(authOf(fetchMock.mock.calls[0]));
+      assert.strictEqual((a['1'] as { status: string }).status, 'up');
 
-  it('sends the API key as the basic-auth password when a key file is set', async () => {
-    dir = mkdtempSync(join(tmpdir(), 'kuma-'));
-    const keyFile = join(dir, 'key');
-    writeFileSync(keyFile, 'uk1_secret\n');
-    const fetchMock = vi.fn(async () => ok());
-    await new KumaClient({
-      url: new URL('http://kuma:3001/base/'),
-      apiKeyFile: keyFile,
-      fetch: fetchMock as typeof fetch,
-    }).get();
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(url.href).toBe('http://kuma:3001/base/metrics');
-    expect((init.headers as Record<string, string>).Authorization).toBe(
-      `Basic ${Buffer.from(':uk1_secret').toString('base64')}`,
+      yield* TestClock.adjust('29 seconds');
+      yield* health.get;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      yield* TestClock.adjust('2 seconds');
+      yield* health.get;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }),
+  );
+
+  it.effect('sends the API key as the basic-auth password when a key file is set', () =>
+    Effect.gen(function* () {
+      dir = mkdtempSync(join(tmpdir(), 'kuma-'));
+      const keyFile = join(dir, 'key');
+      writeFileSync(keyFile, 'uk1_secret\n');
+      const fetchMock = vi.fn(async () => ok());
+      const health = yield* kuma(fetchMock, {
+        url: new URL('http://kuma:3001/base/'),
+        apiKeyFile: keyFile,
+      });
+      yield* health.get;
+      assert.strictEqual(urlOf(fetchMock.mock.calls[0]), 'http://kuma:3001/base/metrics');
+      assert.strictEqual(
+        authOf(fetchMock.mock.calls[0]),
+        `Basic ${Buffer.from(':uk1_secret').toString('base64')}`,
+      );
+    }),
+  );
+
+  it.effect('returns an error instead of failing when the key file is missing', () =>
+    Effect.gen(function* () {
+      const fetchMock = vi.fn(async () => ok());
+      const health = yield* kuma(fetchMock, { apiKeyFile: '/nonexistent/key' });
+      const body = yield* health.get;
+      assert.include(body.error, 'not readable');
+      expect(fetchMock).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect('returns an error for HTTP failures, network errors and oversized bodies', () =>
+    Effect.gen(function* () {
+      const http = yield* kuma(async () => new Response('no', { status: 401 }));
+      assert.deepStrictEqual(yield* http.get, { error: 'Uptime Kuma answered HTTP 401' });
+
+      const down = yield* kuma(async () => {
+        throw new TypeError('fetch failed');
+      });
+      assert.include((yield* down.get).error, 'fetch failed');
+
+      const big = yield* kuma(async () => ok(), { maxBytes: 100 });
+      assert.include((yield* big.get).error, 'exceed');
+    }),
+  );
+
+  it.effect('retries sooner after an error than after success', () =>
+    Effect.gen(function* () {
+      let fail = true;
+      const fetchMock = vi.fn(async () => (fail ? new Response('', { status: 500 }) : ok()));
+      const health = yield* kuma(fetchMock);
+      assert.isDefined((yield* health.get).error);
+      fail = false;
+      yield* TestClock.adjust('11 seconds');
+      assert.isUndefined((yield* health.get).error);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }),
+  );
+
+  it.effect('backs off while Kuma keeps failing: 10 s, 20 s, then every 30 s', () =>
+    Effect.gen(function* () {
+      const fetchMock = vi.fn(async () => new Response('', { status: 503 }));
+      const health = yield* kuma(fetchMock);
+      const callsAt = function* (step: Duration.Input) {
+        yield* TestClock.adjust(step);
+        yield* health.get;
+        return fetchMock.mock.calls.length;
+      };
+      yield* health.get;
+      assert.strictEqual(yield* callsAt('9 seconds'), 1);
+      assert.strictEqual(yield* callsAt('1 second'), 2); // t = 10 s
+      assert.strictEqual(yield* callsAt('19 seconds'), 2);
+      assert.strictEqual(yield* callsAt('1 second'), 3); // t = 30 s
+      assert.strictEqual(yield* callsAt('29 seconds'), 3);
+      assert.strictEqual(yield* callsAt('1 second'), 4); // t = 60 s, capped at the 30 s TTL
+      assert.strictEqual(yield* callsAt('30 seconds'), 5);
+    }),
+  );
+
+  it('computes the error backoff', () => {
+    const base = Duration.seconds(10);
+    const ttl = Duration.seconds(30);
+    assert.deepStrictEqual(
+      [1, 2, 3, 4].map((n) => Duration.toSeconds(errorBackoff(n, base, ttl))),
+      [10, 20, 30, 30],
     );
   });
 
-  it('returns an error instead of failing when the key file is missing', async () => {
-    const fetchMock = vi.fn(async () => ok());
-    const body = await new KumaClient({
-      url: new URL('http://kuma:3001/'),
-      apiKeyFile: '/nonexistent/key',
-      fetch: fetchMock as typeof fetch,
-    }).get();
-    expect(body).toEqual({ error: expect.stringContaining('not readable') });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('returns an error for HTTP failures, network errors and oversized bodies', async () => {
-    const url = new URL('http://kuma:3001/');
-    const http = await new KumaClient({
-      url,
-      fetch: (async () => new Response('no', { status: 401 })) as typeof fetch,
-    }).get();
-    expect(http).toEqual({ error: 'Uptime Kuma answered HTTP 401' });
-
-    const down = await new KumaClient({
-      url,
-      fetch: (async () => {
-        throw new TypeError('fetch failed');
-      }) as typeof fetch,
-    }).get();
-    expect(down).toEqual({ error: 'fetch failed' });
-
-    const big = await new KumaClient({
-      url,
-      maxBytes: 100,
-      fetch: (async () => ok()) as typeof fetch,
-    }).get();
-    expect(big.error).toContain('exceed');
-  });
-
-  it('retries sooner after an error than after success', async () => {
-    let now = 0;
-    let fail = true;
-    const fetchMock = vi.fn(async () => (fail ? new Response('', { status: 500 }) : ok()));
-    const kuma = new KumaClient({
-      url: new URL('http://kuma:3001/'),
-      fetch: fetchMock as typeof fetch,
-      now: () => now,
-    });
-    expect((await kuma.get()).error).toBeDefined();
-    fail = false;
-    now = 11_000;
-    expect((await kuma.get()).error).toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('times out a hanging Kuma', async () => {
-    const hang = ((_u: URL, init: RequestInit) =>
-      new Promise((_, reject) =>
-        init.signal!.addEventListener('abort', () => reject(new Error('timed out'))),
-      )) as unknown as typeof fetch;
-    const body = await new KumaClient({
-      url: new URL('http://kuma/'),
-      timeoutMs: 50,
-      fetch: hang,
-    }).get();
-    expect(body.error).toBe('timed out');
-  });
+  it.effect('times out a hanging Kuma', () =>
+    Effect.gen(function* () {
+      const hang = (_u: unknown, init?: RequestInit) =>
+        new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+        );
+      const health = yield* kuma(hang as never, { timeout: '50 millis' });
+      const fiber = yield* Effect.forkChild(health.get);
+      yield* TestClock.adjust('100 millis');
+      const body = yield* Fiber.join(fiber);
+      assert.include(body.error, 'did not answer in time');
+    }),
+  );
 });

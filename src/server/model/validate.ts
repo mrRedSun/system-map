@@ -2,7 +2,7 @@
  * Validate merged items one at a time so a bad entity does not hide the rest:
  * schema errors drop the entity, unknown keys only warn, and duplicate ids keep the first.
  */
-import type { z } from 'zod';
+import { Result, Schema, SchemaIssue } from 'effect';
 import type { Problem } from '../../shared/model.js';
 import {
   SECTION_KEYS,
@@ -28,6 +28,47 @@ export interface ValidationResult {
   problems: Problem[];
 }
 
+/** One schema finding: an unknown key, or an error at a path. */
+export interface Finding {
+  kind: 'unknown-key' | 'error';
+  path: PathSegment[];
+  message: string;
+}
+
+const UNKNOWN_KEY = '\u0000unknown-key';
+
+const format = SchemaIssue.makeFormatterStandardSchemaV1({
+  leafHook: (issue) => {
+    if (issue._tag === 'UnexpectedKey') return UNKNOWN_KEY;
+    if (issue._tag === 'MissingKey') return 'required';
+    return SchemaIssue.defaultLeafHook(issue);
+  },
+});
+
+/** Decode `value`; `strict` reports only keys the schema does not declare. */
+export function check(
+  schema: Schema.Decoder<unknown>,
+  value: unknown,
+  strict: boolean,
+): { ok: true; value: unknown } | { ok: false; findings: Finding[] } {
+  const result = Schema.decodeUnknownResult(schema)(value, {
+    errors: 'all',
+    ...(strict ? { onExcessProperty: 'error' as const } : {}),
+  });
+  if (Result.isSuccess(result)) return { ok: true, value: result.success };
+  const findings: Finding[] = [];
+  for (const issue of format(result.failure.issue).issues) {
+    const path = (issue.path ?? []).map((p) =>
+      typeof p === 'object' && p !== null ? (p as { key: PropertyKey }).key : p,
+    ) as PropertyKey[];
+    const clean = path.filter((p): p is string | number => typeof p !== 'symbol');
+    if (issue.message === UNKNOWN_KEY)
+      findings.push({ kind: 'unknown-key', path: clean, message: '' });
+    else if (!strict) findings.push({ kind: 'error', path: clean, message: issue.message });
+  }
+  return { ok: false, findings };
+}
+
 export function validate(merged: MergeResult): ValidationResult {
   const problems: Problem[] = [];
   const origins = new Map<string, Origin>();
@@ -38,8 +79,8 @@ export function validate(merged: MergeResult): ValidationResult {
 
   const accepted: { section: SectionKey; entity: AnyEntity; origin: Origin }[] = [];
   for (const section of SECTION_KEYS) {
-    const loose = looseSchemas.sections[section] as z.ZodType;
-    const strict = strictSchemas.sections[section] as z.ZodType;
+    const loose = looseSchemas.sections[section] as unknown as Schema.Decoder<unknown>;
+    const strict = strictSchemas.sections[section] as unknown as Schema.Decoder<unknown>;
     for (const { value, origin } of merged.sections[section]) {
       const rawId =
         typeof value === 'object' && value !== null && 'id' in value
@@ -47,21 +88,19 @@ export function validate(merged: MergeResult): ValidationResult {
           : undefined;
       const id = typeof rawId === 'string' ? rawId : undefined;
 
-      const parsed = loose.safeParse(value);
-      if (!parsed.success) {
+      const parsed = check(loose, value, false);
+      if (!parsed.ok) {
         if (id) invalidIds.add(id);
         problems.push(
-          ...issueProblems(parsed.error.issues, origin, id, {
+          ...findingProblems(parsed.findings, origin, id, {
             suffix: id ? ` (\`${id}\` skipped)` : ' (entry skipped)',
           }),
         );
         continue;
       }
-      const strictResult = strict.safeParse(value);
-      if (!strictResult.success) {
-        problems.push(...issueProblems(strictResult.error.issues, origin, id));
-      }
-      accepted.push({ section, entity: parsed.data as AnyEntity, origin });
+      const strictResult = check(strict, value, true);
+      if (!strictResult.ok) problems.push(...findingProblems(strictResult.findings, origin, id));
+      accepted.push({ section, entity: parsed.value as AnyEntity, origin });
     }
   }
 
@@ -91,70 +130,52 @@ export function validate(merged: MergeResult): ValidationResult {
 }
 
 function validateMeta(merged: MergeResult, problems: Problem[]): Meta {
-  const parsed = looseSchemas.meta.safeParse(merged.meta);
-  const strict = strictSchemas.meta.safeParse(merged.meta);
-  const issues = [
-    ...(parsed.success ? [] : parsed.error.issues),
-    ...(strict.success ? [] : strict.error.issues.filter((i) => i.code === 'unrecognized_keys')),
-  ];
-  for (const issue of issues) {
-    const path = ['meta', ...cleanPath(issue.path)];
+  const parsed = check(looseSchemas.meta as unknown as Schema.Decoder<unknown>, merged.meta, false);
+  const strict = check(strictSchemas.meta as unknown as Schema.Decoder<unknown>, merged.meta, true);
+  const findings = [...(parsed.ok ? [] : parsed.findings), ...(strict.ok ? [] : strict.findings)];
+  for (const finding of findings) {
+    const path = ['meta', ...finding.path];
     // Attribute the problem to the last file that defines the path.
     const file =
       [...merged.metaFiles].reverse().find((f) => f.doc.hasIn(path)) ?? merged.metaFiles.at(-1);
     if (!file) continue;
     problems.push(
-      ...issueProblems([issue], { file, path: ['meta'], order: -1 }, undefined, {}, path),
+      ...findingProblems([finding], { file, path: ['meta'], order: -1 }, undefined, {}, true),
     );
   }
-  return parsed.success ? parsed.data : {};
+  return parsed.ok ? (parsed.value as Meta) : {};
 }
 
-function cleanPath(path: readonly PropertyKey[]): PathSegment[] {
-  return path.filter((s): s is string | number => typeof s !== 'symbol');
-}
-
-function issueProblems(
-  issues: readonly z.core.$ZodIssue[],
+function findingProblems(
+  findings: readonly Finding[],
   origin: Origin,
   entity: string | undefined,
   { suffix = '' }: { suffix?: string } = {},
-  fullPathOverride?: PathSegment[],
+  pathIsFull = false,
 ): Problem[] {
-  const out: Problem[] = [];
-  for (const issue of issues) {
-    const path = fullPathOverride ?? [...origin.path, ...cleanPath(issue.path)];
-    if (issue.code === 'unrecognized_keys') {
-      for (const key of issue.keys) {
-        out.push({
-          severity: 'warning',
-          code: 'unknown-key',
-          message: `Unknown key \`${key}\``,
-          file: origin.file.name,
-          line: lineOf(origin.file, path, key),
-          path: formatPath([...path, key]),
-          entity,
-        });
-      }
-      continue;
+  return findings.map((f) => {
+    const path = pathIsFull ? ['meta', ...f.path] : [...origin.path, ...f.path];
+    if (f.kind === 'unknown-key') {
+      const key = String(path.at(-1));
+      return {
+        severity: 'warning',
+        code: 'unknown-key',
+        message: `Unknown key \`${key}\``,
+        file: origin.file.name,
+        line: lineOf(origin.file, path.slice(0, -1), key),
+        path: formatPath(path),
+        entity,
+      } satisfies Problem;
     }
     const where = formatPath(path);
-    out.push({
+    return {
       severity: 'error',
       code: 'schema',
-      message: `${where}: ${describeIssue(issue)}${suffix}`,
+      message: `${where}: ${f.message}${suffix}`,
       file: origin.file.name,
       line: lineOf(origin.file, path),
       path: where,
       entity,
-    });
-  }
-  return out;
-}
-
-function describeIssue(issue: z.core.$ZodIssue): string {
-  if (issue.code === 'invalid_type' && issue.message.endsWith('received undefined')) {
-    return 'required';
-  }
-  return issue.message;
+    } satisfies Problem;
+  });
 }

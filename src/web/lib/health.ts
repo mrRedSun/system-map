@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { HealthResponse, HealthStatus, MonitorHealth, SystemModel } from '../../shared/model';
+import { useMemo } from 'react';
+import { Effect, Schedule, Stream } from 'effect';
+import { AsyncResult, Atom } from 'effect/reactivity';
+import type { HealthStatus, MonitorHealth, SystemModel } from '../../shared/model';
+import { ApiClient, errorText } from './client';
 import type { ModelIndex } from './model-index';
 
-const POLL_MS = 30_000;
+const POLL = '30 seconds';
 
 export interface HealthState {
   monitors: Record<string, MonitorHealth>;
@@ -10,46 +13,49 @@ export interface HealthState {
   loaded: boolean;
 }
 
-/** Polls /api/health every 30 s while the page is visible. */
-export function useHealth(): HealthState {
-  const [state, setState] = useState<HealthState>({ monitors: {}, loaded: false });
-  useEffect(() => {
-    let timer: number | undefined;
-    let ctrl: AbortController | undefined;
-    const load = async () => {
-      ctrl?.abort();
-      ctrl = new AbortController();
-      try {
-        const res = await fetch('/api/health', { cache: 'no-store', signal: ctrl.signal });
-        const body = (await res.json()) as HealthResponse;
-        const { error, ...rest } = body;
-        setState({ monitors: rest as Record<string, MonitorHealth>, error, loaded: true });
-      } catch (err) {
-        if (ctrl.signal.aborted) return;
-        setState((s) => ({
-          ...s,
-          error: err instanceof Error ? err.message : String(err),
-          loaded: true,
-        }));
-      }
-    };
-    const schedule = () => {
-      window.clearInterval(timer);
-      if (document.visibilityState === 'visible') {
-        void load();
-        timer = window.setInterval(() => void load(), POLL_MS);
-      }
-    };
-    schedule();
-    document.addEventListener('visibilitychange', schedule);
-    return () => {
-      window.clearInterval(timer);
-      ctrl?.abort();
-      document.removeEventListener('visibilitychange', schedule);
-    };
-  }, []);
-  return state;
-}
+const INITIAL: HealthState = { monitors: {}, loaded: false };
+
+/** Whether the page is visible, now and on every change. */
+const visibility = Stream.suspend(() =>
+  Stream.concat(
+    Stream.sync(() => document.visibilityState === 'visible'),
+    Stream.fromEventListener(document, 'visibilitychange').pipe(
+      Stream.map(() => document.visibilityState === 'visible'),
+    ),
+  ),
+).pipe(Stream.changes);
+
+/** Polls /api/health every 30 s while the page is visible (immediately on becoming visible). */
+export const healthAtom = ApiClient.runtime
+  .atom(
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const client = yield* ApiClient;
+        let state = INITIAL;
+        const poll = client.health().pipe(
+          Effect.map(({ error, ...monitors }): HealthState => ({
+            monitors: monitors as Record<string, MonitorHealth>,
+            ...(typeof error === 'string' ? { error } : {}),
+            loaded: true,
+          })),
+          Effect.catch((err) =>
+            Effect.succeed<HealthState>({ ...state, error: errorText(err), loaded: true }),
+          ),
+          Effect.tap((next) => Effect.sync(() => (state = next))),
+        );
+        return visibility.pipe(
+          Stream.switchMap((visible) =>
+            visible ? Stream.fromEffectSchedule(poll, Schedule.spaced(POLL)) : Stream.empty,
+          ),
+        );
+      }),
+    ),
+    { initialValue: INITIAL },
+  )
+  .pipe(Atom.keepAlive);
+
+export const healthStateOf = (result: AsyncResult.AsyncResult<HealthState, unknown>): HealthState =>
+  AsyncResult.getOrElse(result, () => INITIAL);
 
 const SEVERITY: Record<HealthStatus, number> = {
   unknown: 0,

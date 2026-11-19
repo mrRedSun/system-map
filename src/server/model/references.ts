@@ -36,7 +36,7 @@ export function collectRefs(s: Sections): RefSite[] {
     owner: string,
     section: SectionKey,
     key: string,
-    list: unknown[] | undefined,
+    list: readonly unknown[] | undefined,
     expect?: SectionKey,
   ) => list?.forEach((t, i) => add(owner, section, [key, i], t, expect));
 

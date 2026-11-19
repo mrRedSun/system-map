@@ -5,7 +5,7 @@ import { exampleFiles, yaml } from './helpers.js';
 
 const file = (name: string, text: string) => ({ name, text });
 const build = (...files: { name: string; text: string }[]) => buildModel(files).model;
-const codes = (problems: Problem[]) => problems.map((p) => p.code);
+const codes = (problems: readonly Problem[]) => problems.map((p) => p.code);
 
 const host = yaml`
   version: 1

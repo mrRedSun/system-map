@@ -1,20 +1,12 @@
 import { Pause, Play, RotateCw, WrapText } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { SseParser } from '../../shared/sse';
+import { useAtomValue } from '@effect/atom-react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { AsyncResult, Atom } from 'effect/reactivity';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { INITIAL, logKey, logStreamAtom, type LogState } from './log-stream';
 
-interface Line {
-  key: number;
-  ts: number;
-  level: string;
-  stream: string;
-  text: string;
-  note?: boolean;
-}
-
-const MAX_LINES = 2000;
 const LEVEL_CLASS: Record<string, string> = {
   error: 'text-[var(--health-down)]',
   fatal: 'text-[var(--health-down)] font-semibold',
@@ -23,106 +15,36 @@ const LEVEL_CLASS: Record<string, string> = {
   trace: 'text-muted-foreground',
 };
 
-type State = 'connecting' | 'live' | 'paused' | 'ended' | 'error';
+const idleAtom = Atom.make(AsyncResult.success<LogState>(INITIAL));
 
 function useLogStream(host: string, container: string) {
-  const [lines, setLines] = useState<Line[]>([]);
-  const [state, setState] = useState<State>('connecting');
-  const [message, setMessage] = useState<string>();
   const [run, setRun] = useState(0);
   const [paused, setPaused] = useState(false);
-
-  useEffect(() => {
-    if (paused) return;
-    const ctrl = new AbortController();
-    let key = 0;
-    let pending: Line[] = [];
-    let frame = 0;
-    const flush = () => {
-      frame = 0;
-      const batch = pending;
-      pending = [];
-      setLines((prev) => [...prev, ...batch].slice(-MAX_LINES));
-    };
-    const add = (l: Omit<Line, 'key'>) => {
-      pending.push({ ...l, key: Date.now() * 1000 + (key++ % 1000) });
-      frame ||= requestAnimationFrame(flush);
-    };
-    (async () => {
-      const res = await fetch(
-        `/api/logs/${encodeURIComponent(host)}/${encodeURIComponent(container)}?tail=200`,
-        { signal: ctrl.signal, headers: { Accept: 'text/event-stream' } },
-      );
-      if (!res.ok || !res.body) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `HTTP ${res.status}`);
-      }
-      setState('live');
-      const parser = new SseParser();
-      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        for (const msg of parser.push(value)) {
-          const data = JSON.parse(msg.data) as Record<string, unknown>;
-          if (msg.event === 'line') add(data as unknown as Line);
-          else if (msg.event === 'dropped') {
-            add({
-              ts: Date.now(),
-              level: 'warn',
-              stream: '',
-              text: `… ${String(data.count)} lines skipped (rate limit)`,
-              note: true,
-            });
-          } else if (msg.event === 'status') {
-            if (data.message !== 'live')
-              add({
-                ts: Date.now(),
-                level: 'info',
-                stream: '',
-                text: `— ${String(data.message)} —`,
-                note: true,
-              });
-          } else if (msg.event === 'error' || msg.event === 'end') {
-            setMessage(String(data.message));
-            setState(msg.event === 'error' ? 'error' : 'ended');
-          }
-        }
-      }
-      setState((s) => (s === 'live' ? 'ended' : s));
-    })().catch((err: unknown) => {
-      if (ctrl.signal.aborted) return;
-      setMessage(err instanceof Error ? err.message : String(err));
-      setState('error');
-    });
-
-    return () => {
-      ctrl.abort();
-      cancelAnimationFrame(frame);
-    };
-  }, [host, container, run, paused]);
-
-  // Each (re)connect replays the tail, so it starts from an empty buffer.
-  const restart = useCallback(() => {
-    setLines([]);
-    setState('connecting');
-    setMessage(undefined);
-  }, []);
+  // Paused: nothing reads the stream atom, so its request is aborted. Each (re)connect is a
+  // new run, which replays the tail into an empty buffer.
+  const live = AsyncResult.getOrElse(
+    useAtomValue(paused ? idleAtom : logStreamAtom(logKey(host, container, run))),
+    () => INITIAL,
+  );
+  // While paused, the lines received so far stay on screen.
+  const [frozen, setFrozen] = useState<LogState>(INITIAL);
+  const { lines, message } = paused ? frozen : live;
+  const state = paused ? ('paused' as const) : live.state;
 
   return {
     lines,
-    state: paused ? ('paused' as const) : state,
+    state,
     message,
     paused,
     togglePause: useCallback(() => {
-      if (paused) restart();
+      if (paused) setRun((r) => r + 1);
+      else setFrozen(live);
       setPaused(!paused);
-    }, [paused, restart]),
+    }, [paused, live]),
     reconnect: useCallback(() => {
-      restart();
       setPaused(false);
       setRun((r) => r + 1);
-    }, [restart]),
+    }, []),
   };
 }
 

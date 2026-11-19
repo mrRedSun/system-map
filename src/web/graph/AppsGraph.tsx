@@ -25,13 +25,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Kbd } from '@/components/ui/kbd';
 import { statusOf } from '@/lib/model-index';
 import { useNarrow } from '@/lib/media';
-import { usePersisted } from '@/lib/persisted';
+import { useAtom } from '@effect/atom-react';
+import { appsExternalsAtom, appsIngressAtom, showRetiredAtom } from '@/lib/prefs';
 import { iconFor, kindLabel } from '@/lib/visuals';
 import { AppEdge, type AppFlowEdge } from './app-edge';
 import { edgeSides, labelSize, placeLabels, type Rect } from './edge-labels';
 import { AppNode, SmallNode, StackNode, type AppGraphNode, type PortInfo } from './app-nodes';
 import {
-  DEFAULT_APPS_OPTIONS,
   buildApps,
   edgeLabel,
   focusGraph,
@@ -47,7 +47,6 @@ import { useTweenedNodes } from './use-tween';
 
 const NODE_TYPES = { app: AppNode, small: SmallNode, stack: StackNode };
 const EDGE_TYPES = { app: AppEdge };
-const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 
 /** Below this, labels are too small to read; the first view then starts at READABLE_ZOOM. */
 const MIN_READABLE_ZOOM = 0.5;
@@ -79,13 +78,9 @@ export function AppsGraph({
   onMode,
 }: GraphViewProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [showRetired, setShowRetired] = usePersisted('show-retired', false, isBool);
-  const [externals, setExternals] = usePersisted(
-    'apps-externals',
-    DEFAULT_APPS_OPTIONS.externals,
-    isBool,
-  );
-  const [ingress, setIngress] = usePersisted('apps-ingress', DEFAULT_APPS_OPTIONS.ingress, isBool);
+  const [showRetired, setShowRetired] = useAtom(showRetiredAtom);
+  const [externals, setExternals] = useAtom(appsExternalsAtom);
+  const [ingress, setIngress] = useAtom(appsIngressAtom);
   const [focusMode, setFocusMode] = useState(false);
   /** Highlight for items without an entity (externals, the Other stack). */
   const [local, setLocal] = useState<string | undefined>(undefined);

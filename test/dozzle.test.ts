@@ -1,9 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DozzleProxy, lineText } from '../src/server/dozzle.js';
-import { SseParser } from '../src/shared/sse.js';
+import { NodeHttpServer } from '@effect/platform-node';
+import { assert, describe, it } from '@effect/vitest';
+import { Context, Deferred, Effect, Layer, Stream } from 'effect';
+import { Sse } from 'effect/encoding';
+import { FetchHttpClient, HttpRouter, HttpServer } from 'effect/http';
+import { TestClock } from 'effect/testing';
+import { afterEach, beforeEach, expect } from 'vitest';
+import {
+  lineText,
+  Logs,
+  overlapFilter,
+  tokenBucket,
+  type DozzleOptions,
+} from '../src/server/dozzle.js';
+import * as Http from '../src/server/http.js';
+import { Health } from '../src/server/kuma.js';
+import * as Logging from '../src/server/logging.js';
+import { DataStore } from '../src/server/store.js';
 
 /** A fake Dozzle hub (v11 API shape) with one agent host and two containers. */
 class FakeDozzle {
@@ -78,44 +92,67 @@ beforeEach(async () => {
 });
 afterEach(() => dozzle.stop());
 
-function app(opts: Partial<ConstructorParameters<typeof DozzleProxy>[0]> = {}) {
-  const proxy = new DozzleProxy({
-    url: dozzle.url,
-    allowed: (h, c) => h === 'docker' && ['wiki', 'missing'].includes(c),
-    ...opts,
-  });
-  const a = new Hono();
-  a.get('/logs/:host/:container', (c) =>
-    proxy.stream(
-      c,
-      c.req.param('host'),
-      c.req.param('container'),
-      Number(c.req.query('tail') ?? 200),
-      c.req.raw.signal,
-    ),
+type Allowed = (host: string, container: string) => boolean;
+
+/** The HTTP app with only the log proxy wired to the fake hub; returns a fetch-like function. */
+const app = Effect.fnUntraced(function* (
+  opts: Partial<DozzleOptions> & { allowed?: Allowed } = {},
+) {
+  const { allowed = (h, c) => h === 'docker' && ['wiki', 'missing'].includes(c), ...rest } = opts;
+  const logs = yield* Logs.make({ url: dozzle.url, ...rest }, (h, c) =>
+    Effect.succeed(allowed(h, c)),
+  ).pipe(Effect.provide(FetchHttpClient.layer));
+  const shutdown = yield* Deferred.make<void>();
+  const services = Layer.mergeAll(
+    Layer.succeed(Logs, logs),
+    Layer.succeed(Health, { get: Effect.succeed({}) }),
+    Layer.succeed(DataStore, {
+      current: Effect.succeedNone,
+      snapshots: Stream.never,
+      reload: Effect.void,
+    }),
+    Layer.succeed(Http.Shutdown, shutdown),
+    Logging.layer('error', { out: () => {}, err: () => {} }),
   );
-  return { proxy, app: a };
+  // A real HTTP server, so client disconnects behave as in production.
+  const ctx = yield* Layer.build(
+    HttpRouter.serve(Http.layer({}).pipe(Layer.provide(services)), {
+      disableLogger: true,
+      disableListenLog: true,
+    }).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { port: 0, host: '127.0.0.1' }))),
+  );
+  const address = Context.get(ctx, HttpServer.HttpServer).address as { port: number };
+  return (path: string) =>
+    Effect.promise(() => fetch(`http://127.0.0.1:${address.port}/api/logs${path}`));
+});
+
+interface Received {
+  event: string;
+  data: string;
 }
 
-/** Read SSE events from a response until `count` events of interest arrived. */
-async function collect(
-  res: Response,
-  until: (events: { event?: string; data: string }[]) => boolean,
-) {
-  const reader = res.body!.getReader();
-  const parser = new SseParser();
-  const decoder = new TextDecoder();
-  const events: { event?: string; data: string }[] = [];
-  const deadline = Date.now() + 3000;
-  while (!until(events)) {
-    if (Date.now() > deadline) throw new Error(`timed out; got ${JSON.stringify(events)}`);
-    const { value, done } = await reader.read();
-    if (done) break;
-    events.push(...parser.push(decoder.decode(value, { stream: true })));
-  }
-  await reader.cancel();
-  return events;
-}
+/** Read SSE events from a response until `until` holds, then cancel the body. */
+const collect = (res: Response, until: (events: Received[]) => boolean) =>
+  Effect.promise(async () => {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    const events: Received[] = [];
+    const parser = Sse.makeParser((e) => {
+      if (e._tag === 'Event') events.push({ event: e.event, data: e.data });
+    });
+    const deadline = Date.now() + 3000;
+    while (!until(events)) {
+      if (Date.now() > deadline) throw new Error(`timed out; got ${JSON.stringify(events)}`);
+      const { value, done } = await reader.read();
+      if (done) break;
+      parser.feed(decoder.decode(value, { stream: true }));
+    }
+    await reader.cancel();
+    return events;
+  });
+
+const errorOf = (res: Response) =>
+  Effect.promise(() => res.json() as Promise<{ error: string }>).pipe(Effect.map((b) => b.error));
 
 const ev = (id: number, ts: number, m: string, extra: object = {}) => ({
   t: 'single',
@@ -130,72 +167,133 @@ const ev = (id: number, ts: number, m: string, extra: object = {}) => ({
 });
 
 describe('Dozzle proxy', () => {
-  it('refuses containers that are not declared in the data', async () => {
-    const res = await app().app.request('/logs/docker/other');
-    expect(res.status).toBe(404);
-    expect(((await res.json()) as { error: string }).error).toContain('not declared');
-  });
+  it.live('refuses containers that are not declared in the data', () =>
+    Effect.gen(function* () {
+      const res = yield* (yield* app())('/docker/other');
+      assert.strictEqual(res.status, 404);
+      assert.include(yield* errorOf(res), 'not declared');
+    }),
+  );
 
-  it('reports unknown hosts, unknown containers and an unreachable hub', async () => {
-    const { app: a } = app({ allowed: () => true, requestTimeoutMs: 300 });
-    expect((await a.request('/logs/nope/wiki')).status).toBe(404);
-    expect((await a.request('/logs/docker/missing')).status).toBe(404);
-    dozzle.hostAvailable = false;
-    const { app: b } = app({ allowed: () => true });
-    expect((await b.request('/logs/docker/wiki')).status).toBe(502);
-    await dozzle.stop();
-    const { app: c } = app({ allowed: () => true });
-    const res = await c.request('/logs/docker/wiki');
-    expect(res.status).toBe(502);
-    await dozzle.start(); // for afterEach
-  });
+  it.live('reports unknown hosts, unknown containers and an unreachable hub', () =>
+    Effect.gen(function* () {
+      const a = yield* app({ allowed: () => true, requestTimeout: '300 millis' });
+      assert.strictEqual((yield* a('/nope/wiki')).status, 404);
+      assert.strictEqual((yield* a('/docker/missing')).status, 404);
+      dozzle.hostAvailable = false;
+      const b = yield* app({ allowed: () => true });
+      assert.strictEqual((yield* b('/docker/wiki')).status, 502);
+      yield* Effect.promise(() => dozzle.stop());
+      const c = yield* app({ allowed: () => true });
+      const res = yield* c('/docker/wiki');
+      assert.strictEqual(res.status, 502);
+      assert.include(yield* errorOf(res), 'Dozzle unreachable');
+      yield* Effect.promise(() => dozzle.start()); // for afterEach
+    }),
+  );
 
-  it('sends history then live lines, without duplicates at the boundary', async () => {
-    dozzle.history = [ev(1, 1000, 'one'), ev(2, 2000, 'two')];
-    dozzle.live = [ev(2, 2000, 'two'), ev(3, 3000, 'three')];
-    const res = await app().app.request('/logs/docker/wiki?tail=50');
-    expect(res.headers.get('content-type')).toContain('text/event-stream');
-    const events = await collect(res, (e) => e.some((x) => x.data.includes('container started')));
-    const lines = events.filter((e) => e.event === 'line').map((e) => JSON.parse(e.data).text);
-    expect(lines).toEqual(['one', 'two', 'three']);
-    // Resolved the running container by name, asked for all levels and both streams.
-    expect(dozzle.lastHistoryBody?.get('container')).toBe('host-1/bbb222');
-    expect(dozzle.lastHistoryBody?.get('min')).toBe('50');
-    expect(dozzle.lastLiveQuery?.getAll('levels')).toHaveLength(7);
-    expect(dozzle.lastLiveQuery?.get('since')).toBe(new Date(2000).toISOString());
-  });
+  it.live('sends history then live lines, without duplicates at the boundary', () =>
+    Effect.gen(function* () {
+      dozzle.history = [ev(1, 1000, 'one'), ev(2, 2000, 'two')];
+      dozzle.live = [ev(2, 2000, 'two'), ev(3, 3000, 'three')];
+      const res = yield* (yield* app())('/docker/wiki?tail=50');
+      assert.include(res.headers.get('content-type'), 'text/event-stream');
+      const events = yield* collect(res, (e) =>
+        e.some((x) => x.data.includes('container started')),
+      );
+      const lines = events
+        .filter((e) => e.event === 'line')
+        .map((e) => (JSON.parse(e.data) as { text: string }).text);
+      assert.deepStrictEqual(lines, ['one', 'two', 'three']);
+      // Resolved the running container by name, asked for all levels and both streams.
+      assert.strictEqual(dozzle.lastHistoryBody?.get('container'), 'host-1/bbb222');
+      assert.strictEqual(dozzle.lastHistoryBody?.get('min'), '50');
+      assert.lengthOf(dozzle.lastLiveQuery?.getAll('levels') ?? [], 7);
+      assert.strictEqual(dozzle.lastLiveQuery?.get('since'), new Date(2000).toISOString());
+    }),
+  );
 
-  it('caps tail, line length and line rate', async () => {
-    dozzle.history = Array.from({ length: 30 }, (_, i) => ev(i, 1000 + i, `l${i}`));
-    dozzle.live = [ev(100, 9000, 'x'.repeat(50))];
-    const { app: a } = app({ maxTail: 20, burst: 10, linesPerSecond: 0.001, maxLineLength: 10 });
-    const res = await a.request('/logs/docker/wiki?tail=999');
-    const events = await collect(res, (e) => e.some((x) => x.event === 'dropped'));
-    expect(dozzle.lastHistoryBody?.get('min')).toBe('20');
-    expect(events.filter((e) => e.event === 'line')).toHaveLength(10);
-    const dropped = JSON.parse(events.find((e) => e.event === 'dropped')!.data) as {
-      count: number;
-    };
-    expect(dropped.count).toBe(11);
-  });
+  it.live('caps tail, line length and line rate', () =>
+    Effect.gen(function* () {
+      dozzle.history = Array.from({ length: 30 }, (_, i) => ev(i, 1000 + i, `l${i}`));
+      dozzle.live = [ev(100, 9000, 'x'.repeat(50))];
+      const a = yield* app({ maxTail: 20, burst: 10, linesPerSecond: 0.001, maxLineLength: 10 });
+      const res = yield* a('/docker/wiki?tail=999');
+      const events = yield* collect(res, (e) => e.some((x) => x.event === 'dropped'));
+      assert.strictEqual(dozzle.lastHistoryBody?.get('min'), '20');
+      assert.lengthOf(
+        events.filter((e) => e.event === 'line'),
+        10,
+      );
+      const dropped = JSON.parse(events.find((e) => e.event === 'dropped')!.data) as {
+        count: number;
+      };
+      assert.strictEqual(dropped.count, 11);
+    }),
+  );
 
-  it('closes the upstream stream when the client disconnects', async () => {
-    const res = await app().app.request('/logs/docker/wiki?tail=0');
-    await collect(res, (e) => e.some((x) => x.event === 'status'));
-    const start = Date.now();
-    while (dozzle.liveClosed < 1 && Date.now() - start < 2000) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    expect(dozzle.liveOpen).toBe(1);
-    expect(dozzle.liveClosed).toBe(1);
-  });
+  it.live('rejects a bad tail', () =>
+    Effect.gen(function* () {
+      const res = yield* (yield* app())('/docker/wiki?tail=-1');
+      assert.strictEqual(res.status, 400);
+    }),
+  );
 
-  it('limits concurrent streams', async () => {
-    const { app: a } = app({ maxStreams: 1 });
-    const first = await a.request('/logs/docker/wiki?tail=0');
-    const second = await a.request('/logs/docker/wiki?tail=0');
-    expect(second.status).toBe(429);
-    await first.body!.cancel();
+  it.live('closes the upstream stream when the client disconnects', () =>
+    Effect.gen(function* () {
+      const res = yield* (yield* app())('/docker/wiki?tail=0');
+      yield* collect(res, (e) => e.some((x) => x.event === 'status'));
+      const start = Date.now();
+      while (dozzle.liveClosed < 1 && Date.now() - start < 2000) yield* Effect.sleep('20 millis');
+      assert.strictEqual(dozzle.liveOpen, 1);
+      assert.strictEqual(dozzle.liveClosed, 1);
+    }),
+  );
+
+  it.live('limits concurrent streams and frees the slot when a stream ends', () =>
+    Effect.gen(function* () {
+      const a = yield* app({ maxStreams: 1 });
+      const first = yield* a('/docker/wiki?tail=0');
+      assert.strictEqual(first.status, 200);
+      const second = yield* a('/docker/wiki?tail=0');
+      assert.strictEqual(second.status, 429);
+      yield* collect(first, (e) => e.some((x) => x.event === 'status'));
+      let third = yield* a('/docker/wiki?tail=0');
+      for (let i = 0; i < 50 && third.status === 429; i++) {
+        yield* Effect.sleep('20 millis');
+        third = yield* a('/docker/wiki?tail=0');
+      }
+      assert.strictEqual(third.status, 200);
+      yield* Effect.promise(() => third.body!.cancel());
+    }),
+  );
+});
+
+describe('rate limit and overlap', () => {
+  it.effect('tokenBucket allows a burst, then refills at the rate', () =>
+    Effect.gen(function* () {
+      const take = tokenBucket(2, 3);
+      const takes = (n: number) => Effect.all(Array.from({ length: n }, () => take));
+      assert.deepStrictEqual(yield* takes(4), [true, true, true, false]);
+      yield* TestClock.adjust('500 millis');
+      assert.deepStrictEqual(yield* takes(2), [true, false]);
+      yield* TestClock.adjust('10 seconds');
+      assert.deepStrictEqual(yield* takes(4), [true, true, true, false]);
+    }),
+  );
+
+  it('overlapFilter drops older lines and repeated ids at the newest timestamp', () => {
+    const f = overlapFilter();
+    expect([
+      f.accept(1000, 1),
+      f.accept(2000, 2),
+      f.accept(2000, 2),
+      f.accept(2000, 3),
+      f.accept(1500, 9),
+      f.accept(2000, undefined),
+      f.accept(3000, 2),
+    ]).toEqual([true, true, false, true, false, true, true]);
+    assert.strictEqual(f.lastTs, 3000);
   });
 });
 

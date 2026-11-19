@@ -1,0 +1,48 @@
+# System Map deployment example. Copy to compose.yaml and adjust.
+# Pin the image to an immutable tag (sha-<commit>) or digest; `main` is only a moving alias.
+services:
+  system-map:
+    image: ghcr.io/mrredsun/system-map:sha-<commit>
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      PORT: '8080'
+      # Optional: Uptime Kuma base URL (its /metrics feeds the health dots).
+      KUMA_URL: http://uptime-kuma:3001
+      # Optional: only when Kuma /metrics requires an API key.
+      # KUMA_API_KEY_FILE: /run/secrets/kuma_api_key
+      # Optional: Dozzle hub base URL (live logs, read-only).
+      DOZZLE_URL: http://dozzle:8080
+      LOG_LEVEL: info
+    volumes:
+      # The YAML data directory: the single source of truth. Mounted read-only.
+      - ./data:/data:ro
+    # secrets: [kuma_api_key]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: '65532:65532'
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+    networks: [proxy]
+    # No published ports: reach it only through the reverse proxy, which must enforce auth.
+    labels:
+      traefik.enable: 'true'
+      traefik.http.routers.system-map.rule: Host(`map.example.net`)
+      traefik.http.routers.system-map.entrypoints: websecure
+      traefik.http.routers.system-map.tls: 'true'
+      traefik.http.routers.system-map.middlewares: authelia@docker
+      traefik.http.services.system-map.loadbalancer.server.port: '8080'
+
+# secrets:
+#   kuma_api_key:
+#     file: ./secrets/kuma_api_key
+
+networks:
+  proxy:
+    external: true

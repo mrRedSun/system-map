@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=../schema/system-map.schema.json
+version: 1
+
+routes:
+  - id: route-wiki
+    host: wiki.example.net
+    via: traefik
+    target: wiki
+    upstream: http://wiki:3000
+    auth: authelia
+    middlewares: [authelia@file, secure-headers@file]
+  - id: route-photos
+    host: photos.example.net
+    via: traefik
+    target: photos
+    upstream: http://photos:2283
+    auth: app
+    middlewares: [secure-headers@file]
+  - id: route-photos-share
+    host: photos.example.net
+    paths: [/share/*]
+    via: cloudflare-worker
+    target: photos
+    auth: none
+    notes: Public share links only; the worker strips everything else.
+  - id: route-auth
+    host: auth.example.net
+    via: traefik
+    target: authelia
+    upstream: http://authelia:9091
+    auth: app
+  - id: route-status
+    host: status.example.net
+    via: traefik
+    target: uptime-kuma
+    upstream: http://uptime-kuma:3001
+    auth: authelia
+    middlewares: [authelia@file]
+  - id: route-vpn
+    host: vpn.example.net
+    via: router-forward
+    target: wireguard
+    auth: key
+
+monitors:
+  - { id: kuma-1, kuma_id: 1, name: Wiki, type: http, target: 'https://wiki.example.net/', service: wiki, group: Public }
+  - { id: kuma-2, kuma_id: 2, name: Authelia, type: http, target: 'https://auth.example.net/api/health', service: authelia, group: Public }
+  - { id: kuma-3, kuma_id: 3, name: Photos, type: http, target: 'https://photos.example.net/api/server/ping', service: photos, group: Public }
+  - { id: kuma-4, kuma_id: 4, name: DNS, type: dns, target: 10.10.0.53, service: adguard, group: LAN }
+  - { id: kuma-5, kuma_id: 5, name: Jellyfin, type: http, target: 'http://10.10.0.20:8096/health', service: jellyfin, group: LAN }
+  - { id: kuma-6, kuma_id: 6, name: Proxmox, type: http, target: 'https://10.10.0.2:8006/', service: proxmox-ui, group: LAN }
+  - { id: kuma-7, kuma_id: 7, name: Nightly backup, type: push, group: Jobs }

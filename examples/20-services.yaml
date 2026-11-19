@@ -1,0 +1,159 @@
+# yaml-language-server: $schema=../schema/system-map.schema.json
+version: 1
+
+services:
+  - id: proxmox-ui
+    name: Proxmox web UI
+    node: pve
+    kind: native
+    ports:
+      - { port: 8006, proto: tcp, bind: 10.10.0.2, auth: own, exposure: lan, purpose: Web UI and API }
+    urls:
+      - { label: UI, url: 'https://10.10.0.2:8006/', internal: true }
+    auth: own
+    health: { kuma: [kuma-6] }
+
+  - id: traefik
+    name: Traefik
+    node: vm-docker
+    kind: container
+    image: traefik
+    version: v3.6.2
+    pin: traefik:v3.6.2
+    ports:
+      - { port: 443, proto: tcp, bind: 0.0.0.0, auth: none, exposure: public, purpose: HTTPS entrypoint }
+      - { port: 8080, proto: tcp, bind: 127.0.0.1, auth: none, exposure: internal, purpose: Dashboard }
+    auth: none
+    calls:
+      - { target: authelia, via: forwardAuth, port: 9091, purpose: Authentication }
+      - { target: wiki, via: http, port: 3000 }
+      - { target: photos, via: http, port: 2283 }
+      - { target: uptime-kuma, via: http, port: 3001 }
+      - { target: api.cloudflare.com, via: https, purpose: ACME DNS challenge }
+    logs: { dozzle: { host: docker, container: traefik } }
+    paths: { config: /opt/stacks/traefik, dynamic: /opt/stacks/traefik/dynamic }
+    secrets:
+      - { path: /opt/stacks/traefik/.env, purpose: Cloudflare DNS API token }
+    update: { command: cd /opt/stacks/traefik && docker compose pull && docker compose up -d }
+
+  - id: authelia
+    name: Authelia
+    node: vm-docker
+    kind: container
+    image: authelia/authelia
+    version: 4.39.13
+    pin: authelia/authelia:4.39.13
+    ports:
+      - { port: 9091, proto: tcp, auth: none, exposure: internal, purpose: forwardAuth and portal }
+    auth: own
+    calls:
+      - { target: smtp.example.org, via: smtp, port: 587, purpose: Notifications }
+    health: { kuma: [kuma-2] }
+    logs: { dozzle: { host: docker, container: authelia } }
+    notes: Two-factor (TOTP) is **required** for every user.
+
+  - id: wiki
+    name: Wiki
+    node: vm-docker
+    kind: compose
+    image: example/wiki
+    version: 2.4.1
+    ports:
+      - { port: 3000, proto: tcp, auth: authelia, exposure: public, purpose: Web }
+    urls:
+      - { label: Wiki, url: 'https://wiki.example.net/' }
+    auth: authelia
+    calls:
+      - { target: wiki-db, via: postgres, port: 5432 }
+    health: { kuma: [kuma-1] }
+    logs: { dozzle: { host: docker, container: wiki } }
+    backup: { how: pg_dump nightly, where: tank/backup/wiki }
+
+  - id: wiki-db
+    name: Wiki database
+    node: vm-docker
+    kind: container
+    image: postgres
+    version: '17.6'
+    ports:
+      - { port: 5432, proto: tcp, auth: own, exposure: internal }
+    auth: own
+    logs: { dozzle: { host: docker, container: wiki-db } }
+
+  - id: photos
+    name: Photos
+    node: vm-docker
+    kind: compose
+    image: example/photos
+    version: 1.140.0
+    ports:
+      - { port: 2283, proto: tcp, auth: own, exposure: public, purpose: Web and mobile app }
+    urls:
+      - { label: Photos, url: 'https://photos.example.net/' }
+    auth: own
+    health: { kuma: [kuma-3] }
+    logs: { dozzle: { host: docker, container: photos } }
+
+  - id: uptime-kuma
+    name: Uptime Kuma
+    node: vm-docker
+    kind: container
+    image: louislam/uptime-kuma
+    version: 2.0.2
+    ports:
+      - { port: 3001, proto: tcp, auth: authelia, exposure: restricted, purpose: Status UI and /metrics }
+    auth: authelia
+    calls:
+      - { target: Telegram Bot API, via: https, purpose: Alerts }
+    logs: { dozzle: { host: docker, container: uptime-kuma } }
+
+  - id: dozzle
+    name: Dozzle
+    node: vm-docker
+    kind: container
+    image: amir20/dozzle
+    version: v11.4.2
+    ports:
+      - { port: 8080, proto: tcp, auth: none, exposure: lan, purpose: Log hub (read-only) }
+    auth: none
+
+  - id: adguard
+    name: AdGuard Home
+    node: ct-dns
+    kind: native
+    version: v0.107.70
+    ports:
+      - { port: 53, proto: udp, auth: none, exposure: lan, purpose: DNS }
+      - { port: 53, proto: tcp, auth: none, exposure: lan, purpose: DNS }
+      - { port: 3000, proto: tcp, auth: own, exposure: lan, purpose: Admin UI }
+    auth: own
+    calls:
+      - { target: Quad9, via: DNS-over-TLS, port: 853, purpose: Upstream resolver }
+    health: { kuma: [kuma-4] }
+
+  - id: jellyfin
+    name: Jellyfin
+    node: ct-media
+    kind: systemd
+    version: 10.11.2
+    ports:
+      - { port: 8096, proto: tcp, auth: own, exposure: lan, purpose: Web and clients }
+    auth: own
+    health: { kuma: [kuma-5] }
+    update: { command: apt update && apt install --only-upgrade jellyfin }
+
+  - id: transcoder
+    name: Batch transcoder
+    node: ct-media
+    kind: timer
+    status: deliberately-stopped
+    schedule: Sun 03:00
+    notes: Disabled until the new hardware encoder settings are tested.
+
+  - id: wireguard
+    name: WireGuard
+    node: router
+    kind: native
+    ports:
+      - { port: 51820, proto: udp, auth: key, exposure: public, purpose: VPN }
+    auth: key

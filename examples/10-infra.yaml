@@ -1,0 +1,163 @@
+# yaml-language-server: $schema=../schema/system-map.schema.json
+version: 1
+
+zones:
+  - id: zone-example-net
+    domain: example.net
+    provider: Cloudflare
+    plan: free
+    records:
+      - { name: example.net, type: A, value: 203.0.113.10, proxied: true }
+      - { name: '*.example.net', type: CNAME, value: example.net, proxied: true }
+      - { name: vpn.example.net, type: A, value: 203.0.113.10, proxied: false }
+    settings:
+      ssl: full-strict
+      always_use_https: true
+      min_tls_version: '1.2'
+    rules:
+      - kind: waf
+        expression: (ip.geoip.country ne "DE")
+        action: managed_challenge
+        note: Challenge traffic from outside the home country.
+    workers:
+      - route: photos.example.net/share/*
+        script: share-proxy
+        purpose: Serves public share links without exposing the photos app.
+
+networks:
+  - id: lan
+    name: Home LAN
+    cidr: 10.10.0.0/24
+    gateway: 10.10.0.1
+    dns: [10.10.0.53]
+    dhcp: router, 10.10.0.100-10.10.0.199
+  - id: vpn-net
+    name: WireGuard
+    cidr: 10.20.0.0/24
+    notes: Peers get addresses statically assigned in the router.
+
+nodes:
+  - id: internet
+    kind: internet
+    name: Internet
+  - id: cloudflare
+    kind: cdn
+    name: Cloudflare
+    description: DNS, proxy and WAF for example.net.
+    links:
+      - { label: Dashboard, url: 'https://dash.cloudflare.com/' }
+  - id: router
+    kind: router
+    name: Edge router
+    ips: [10.10.0.1, 203.0.113.10]
+    network: lan
+    notes: |
+      Forwards **443/tcp** to `vm-docker` and **51820/udp** for WireGuard.
+  - id: pve
+    kind: host
+    name: Proxmox host
+    hostname: pve
+    os: Proxmox VE 9.1
+    ips: [10.10.0.2]
+    network: lan
+    hardware:
+      cpu: 8-core x86_64
+      ram: 64 GiB
+      disks:
+        - { device: /dev/nvme0n1, model: Example NVMe 1TB, size: 1 TB, role: system + guests }
+        - { device: /dev/sda, model: Example HDD 8TB, size: 8 TB, role: tank mirror }
+        - { device: /dev/sdb, model: Example HDD 8TB, size: 8 TB, role: tank mirror }
+    firewall:
+      enabled: true
+      policy_in: DROP
+      policy_out: ACCEPT
+      file: /etc/pve/firewall/cluster.fw
+      rules:
+        - { action: ACCEPT, direction: in, source: 10.10.0.0/24, proto: tcp, port: 8006, comment: Web UI from LAN }
+        - { action: ACCEPT, direction: in, source: 10.10.0.0/24, proto: tcp, port: 22, comment: SSH from LAN }
+    update:
+      command: apt update && apt full-upgrade
+      notes: Reboot only in the maintenance window (Sunday morning).
+    paths:
+      vzdump: /tank/backup/dump
+    secrets:
+      - { path: /root/.config/restic/password, purpose: restic repository password }
+  - id: tank
+    kind: storage
+    name: tank (ZFS mirror)
+    parent: pve
+    description: 2×8 TB ZFS mirror for media, photos and backups.
+  - id: vm-docker
+    kind: vm
+    name: docker
+    parent: pve
+    vmid: 101
+    status: running
+    os: Debian 13
+    hostname: docker
+    ips: [10.10.0.11]
+    network: lan
+    resources: { cores: 4, memory_mib: 8192, disk_gib: 64, disk_storage: local-zfs }
+    autostart: true
+    mounts:
+      - { source: tank/photos, target: /srv/photos, storage: tank, backup: true, purpose: Photo library }
+    backup: { included: true, job: nightly-guests }
+    firewall:
+      enabled: true
+      nic_flag: true
+      policy_in: DROP
+      rules:
+        - { action: ACCEPT, direction: in, proto: tcp, port: 443, comment: Traefik }
+        - { action: ACCEPT, direction: in, source: 10.10.0.0/24, proto: tcp, port: 22, comment: SSH }
+    update:
+      command: apt update && apt upgrade
+      source: Debian security
+    paths:
+      stacks: /opt/stacks
+    secrets:
+      - { path: /opt/stacks/authelia/secrets/, purpose: Authelia JWT and session secrets }
+  - id: ct-dns
+    kind: lxc
+    name: dns
+    parent: pve
+    vmid: 110
+    status: running
+    os: Alpine 3.22
+    ips: [10.10.0.53]
+    network: lan
+    resources: { cores: 1, memory_mib: 512, disk_gib: 4 }
+    privileged: false
+    autostart: true
+    features: [nesting=0]
+    backup: { included: true, job: nightly-guests }
+  - id: ct-media
+    kind: lxc
+    name: media
+    parent: pve
+    vmid: 120
+    status: running
+    os: Debian 13
+    ips: [10.10.0.20]
+    network: lan
+    resources: { cores: 4, memory_mib: 4096, disk_gib: 16 }
+    devices:
+      - { source: /dev/dri/renderD128, target: /dev/dri/renderD128, purpose: Hardware transcoding }
+    mounts:
+      - { source: tank/media, target: /media, readonly: true, storage: tank, backup: false, purpose: Media library }
+    backup: { included: true, job: nightly-guests, notes: Media is not backed up; it can be re-ripped. }
+  - id: ct-sandbox
+    kind: lxc
+    name: sandbox
+    parent: pve
+    vmid: 130
+    status: deliberately-stopped
+    os: Debian 13
+    resources: { cores: 2, memory_mib: 2048, disk_gib: 8 }
+    autostart: false
+    notes: Kept for experiments; start manually.
+    backup: { included: false }
+  - id: phone
+    kind: device
+    name: Owner phone
+    network: vpn-net
+    ips: [10.20.0.2]

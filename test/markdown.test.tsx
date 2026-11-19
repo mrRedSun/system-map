@@ -34,4 +34,11 @@ describe('Markdown', () => {
     expect(safeUrl('mailto:x@example.net')).toBe('');
     expect(safeUrl('//evil.example')).toBe('');
   });
+
+  it('renders [[id]] as an entity reference and keeps entity: links from data inert', () => {
+    const out = html('See [[sonarr]] and [x](entity:javascript:alert)');
+    expect(out).toContain('sonarr');
+    expect(out).not.toContain('[[');
+    expect(out).not.toContain('javascript');
+  });
 });

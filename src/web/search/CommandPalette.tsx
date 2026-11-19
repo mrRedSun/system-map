@@ -82,7 +82,11 @@ export function CommandPalette({
                     key={doc.id}
                     value={doc.id}
                     onSelect={() => {
-                      navigate({ ...location, entity: doc.id });
+                      navigate(
+                        location.view === 'wiki'
+                          ? { view: 'wiki', page: doc.id }
+                          : { ...location, entity: doc.id },
+                      );
                       close();
                     }}
                     className="flex items-start gap-2"

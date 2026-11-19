@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   BookOpen,
+  BookText,
   CalendarClock,
   HelpCircle,
   History,
@@ -14,6 +15,7 @@ import type { View } from '@/lib/router';
 
 export const VIEW_META: Record<View, { label: string; icon: LucideIcon }> = {
   graph: { label: 'Topology', icon: Network },
+  wiki: { label: 'Wiki', icon: BookText },
   entities: { label: 'Entities', icon: Table2 },
   routes: { label: 'Routes', icon: Signpost },
   firewall: { label: 'Firewall', icon: Shield },

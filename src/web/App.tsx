@@ -26,6 +26,7 @@ import { BASE_TABS, DetailPanel, type PanelTab } from '@/panel/DetailPanel';
 import { HealthTab } from '@/panel/health';
 import { LogsTab } from '@/panel/logs';
 import { CommandPalette, useCommandShortcut } from '@/search/CommandPalette';
+import { WikiView } from '@/wiki/WikiView';
 import { VIEW_META } from '@/views/meta';
 import {
   EntitiesView,
@@ -38,7 +39,7 @@ import {
   RoutesView,
 } from '@/views/views';
 
-const PAGES: Record<Exclude<View, 'graph'>, () => React.ReactNode> = {
+const PAGES: Record<Exclude<View, 'graph' | 'wiki'>, () => React.ReactNode> = {
   entities: () => <EntitiesView />,
   routes: () => <RoutesView />,
   firewall: () => <FirewallView />,
@@ -82,7 +83,11 @@ export function App() {
       backRefs: backRefs(model),
       location,
       navigate,
-      hrefFor: (id) => formatHash({ view: location.view, graph: location.graph, entity: id }),
+      // In the wiki, entity links go to that entity's wiki page.
+      hrefFor: (id) =>
+        location.view === 'wiki'
+          ? formatHash({ view: 'wiki', page: id })
+          : formatHash({ view: location.view, graph: location.graph, entity: id }),
       healthOf: (id) => statuses.get(id),
     };
   }, [model, index, location, navigate, statuses]);
@@ -107,8 +112,8 @@ export function App() {
   }, [health, model]);
 
   const closePanel = useCallback(
-    () => navigate({ view: location.view, graph: location.graph }),
-    [navigate, location.view, location.graph],
+    () => navigate({ view: location.view, graph: location.graph, page: location.page }),
+    [navigate, location.view, location.graph, location.page],
   );
 
   const errors = model?.problems.filter((p) => p.severity === 'error').length ?? 0;
@@ -117,8 +122,8 @@ export function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-dvh flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-2 sm:px-3">
+      <div className="flex h-dvh flex-col print:block print:h-auto">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-2 sm:px-3 print:hidden">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" className="lg:hidden" aria-label="Views">
@@ -217,7 +222,7 @@ export function App() {
             The data files have YAML errors. Showing the last good version. See problems.
           </a>
         )}
-        <main className="relative min-h-0 flex-1">
+        <main className="relative min-h-0 flex-1 print:block">
           {!model && (
             <div className="grid h-full place-items-center p-4 text-sm text-muted-foreground">
               {error ?? 'Loading…'}
@@ -235,6 +240,8 @@ export function App() {
                   mode={graphMode}
                   onMode={setGraphMode}
                 />
+              ) : location.view === 'wiki' ? (
+                <WikiView page={location.page} />
               ) : (
                 PAGES[location.view]()
               )}

@@ -1,4 +1,4 @@
-import { ArrowLeft, Link2, X } from 'lucide-react';
+import { ArrowLeft, BookText, Link2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useApp } from '@/app-context';
 import { EntityIcon } from '@/components/EntityIcon';
@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { displayName, exposureOf, statusOf } from '@/lib/model-index';
+import { formatHash } from '@/lib/router';
 import { kindLabel } from '@/lib/visuals';
 import { NetworkTab } from './network';
 import { ConnectionsTab, HistoryTab, OverviewTab, RawTab } from './tabs';
@@ -89,6 +90,15 @@ export function DetailPanel({
           </div>
           {description && <p className="text-sm text-muted-foreground">{description}</p>}
         </div>
+        <Button variant="ghost" size="icon-sm" asChild>
+          <a
+            href={formatHash({ view: 'wiki', page: id })}
+            aria-label="Open in wiki"
+            title="Open in wiki"
+          >
+            <BookText />
+          </a>
+        </Button>
         <Button
           variant="ghost"
           size="icon-sm"

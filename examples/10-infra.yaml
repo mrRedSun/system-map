@@ -47,6 +47,7 @@ nodes:
       - { label: Dashboard, url: 'https://dash.cloudflare.com/' }
   - id: router
     kind: router
+    summary: The internet router; forwards web traffic to Traefik.
     name: Edge router
     ips: [10.10.0.1, 203.0.113.10]
     network: lan
@@ -54,6 +55,7 @@ nodes:
       Forwards **443/tcp** to `vm-docker` and **51820/udp** for WireGuard.
   - id: pve
     kind: host
+    summary: The one physical server. Everything else runs on it.
     name: Proxmox host
     hostname: pve
     os: Proxmox VE 9.1
@@ -83,11 +85,13 @@ nodes:
       - { path: /root/.config/restic/password, purpose: restic repository password }
   - id: tank
     kind: storage
+    summary: The ZFS pool with the media, photos and backups.
     name: tank (ZFS mirror)
     parent: pve
     description: 2×8 TB ZFS mirror for media, photos and backups.
   - id: vm-docker
     kind: vm
+    summary: 'The main Docker VM: ingress, auth and most web apps.'
     name: docker
     parent: pve
     vmid: 101
@@ -117,6 +121,7 @@ nodes:
       - { path: /opt/stacks/authelia/secrets/, purpose: Authelia JWT and session secrets }
   - id: ct-dns
     kind: lxc
+    summary: Small container for DNS filtering.
     name: dns
     parent: pve
     vmid: 110
@@ -131,6 +136,7 @@ nodes:
     backup: { included: true, job: nightly-guests }
   - id: ct-media
     kind: lxc
+    summary: Container for the media stack, close to the media share.
     name: media
     parent: pve
     vmid: 120
@@ -157,6 +163,7 @@ nodes:
     backup: { included: false }
   - id: ct-home
     kind: lxc
+    summary: Container for home automation and the cameras, with the Zigbee stick passed through.
     name: home
     parent: pve
     vmid: 140

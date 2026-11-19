@@ -3,6 +3,7 @@ import { Atom } from 'effect/reactivity';
 
 export const VIEWS = [
   'graph',
+  'wiki',
   'entities',
   'routes',
   'firewall',
@@ -23,13 +24,29 @@ export interface Location {
   view: View;
   /** Graph mode named in the URL (graph view only); otherwise the saved preference applies. */
   graph?: GraphMode;
+  /**
+   * Wiki page (wiki view only): an entity id, or `ref/<index>` for a generated index page.
+   * Absent for the wiki home.
+   */
+  page?: string;
   /** Entity whose detail panel is open. */
   entity?: string;
 }
 
+/** Generated wiki index pages, at `#/wiki/ref/<name>`. */
+export const WIKI_INDEXES = [
+  'articles',
+  'policies',
+  'procedures',
+  'history',
+  'questions',
+  'coverage',
+] as const;
+export type WikiIndex = (typeof WIKI_INDEXES)[number];
+
 /**
- * `#/<view>`, `#/<view>/n/<id>`, the short deep link `#/n/<id>` (graph view), and
- * `#/graph/<mode>[/n/<id>]` for a graph mode.
+ * `#/<view>`, `#/<view>/n/<id>`, the short deep link `#/n/<id>` (graph view),
+ * `#/graph/<mode>[/n/<id>]` for a graph mode, and `#/wiki[/<id> | /ref/<index>][/n/<id>]`.
  */
 export function parseHash(hash: string): Location {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(safeDecode);
@@ -39,17 +56,31 @@ export function parseHash(hash: string): Location {
   }
   const graph =
     view === 'graph' && isGraphMode(parts[0]) ? (parts.shift() as GraphMode) : undefined;
+  let page: string | undefined;
+  if (view === 'wiki' && parts[0] && parts[0] !== 'n') {
+    // Ids are kebab-case, so `ref` followed by a second segment is always an index page.
+    if (parts[0] === 'ref' && parts[1] && parts[1] !== 'n') page = `ref/${parts.splice(0, 2)[1]}`;
+    else page = parts.shift();
+  }
   const entity = parts[0] === 'n' && parts[1] ? parts[1] : undefined;
-  return { view, ...(graph ? { graph } : {}), ...(entity ? { entity } : {}) };
+  return {
+    view,
+    ...(graph ? { graph } : {}),
+    ...(page ? { page } : {}),
+    ...(entity ? { entity } : {}),
+  };
 }
 
 export function formatHash(loc: Location): string {
   const graph = loc.view === 'graph' ? loc.graph : undefined;
+  const page = loc.view === 'wiki' ? loc.page : undefined;
   const base = graph
     ? `#/graph/${graph}`
-    : loc.view === 'graph' && loc.entity
-      ? '#'
-      : `#/${loc.view}`;
+    : page
+      ? `#/wiki/${page.split('/').map(encodeURIComponent).join('/')}`
+      : loc.view === 'graph' && loc.entity
+        ? '#'
+        : `#/${loc.view}`;
   return loc.entity ? `${base}/n/${encodeURIComponent(loc.entity)}` : base;
 }
 

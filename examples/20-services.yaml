@@ -2,9 +2,34 @@
 
 # Stacks group apps in the Apps graph. Services without `stack` land in "Other".
 stacks:
-  - { id: edge, name: Edge and access, color: blue, order: 1 }
-  - { id: media, name: Media, color: violet, order: 2 }
-  - { id: home, name: Home, color: green, order: 3 }
+  - id: edge
+    name: Edge and access
+    color: blue
+    order: 1
+    summary: How requests from the internet reach the apps, and who is let in.
+    description: |
+      Requests for `*.example.net` go through Cloudflare to the router, which forwards ports
+      80 and 443 to [[traefik]]. Traefik picks the app by hostname. Private apps first send the
+      visitor to [[authelia]] for a password and a one-time code.
+
+      Inside the house, [[adguard]] answers DNS for every device, and [[wireguard]] lets a phone
+      join the home network from outside.
+  - id: media
+    name: Media
+    color: violet
+    order: 2
+    summary: Asking for a film or series, downloading it, and watching it on any screen.
+    description: |
+      1. Someone asks for a title in [[requests]].
+      2. [[sonarr]] (series) or [[radarr]] (films) search the indexers through [[prowlarr]].
+      3. The best release goes to [[qbittorrent]], which downloads into the media share.
+      4. Sonarr or Radarr rename it into the library; [[bazarr]] adds subtitles.
+      5. [[jellyfin]] picks it up and streams it.
+  - id: home
+    name: Home
+    color: green
+    order: 3
+    summary: The smart home and the cameras.
   - { id: apps, name: Apps, color: teal, order: 4 }
   - { id: bots, name: Bots, color: pink, order: 5 }
   - { id: observability, name: Observability, color: amber, order: 6 }
@@ -12,6 +37,7 @@ stacks:
 services:
   - id: proxmox-ui
     name: Proxmox web UI
+    summary: 'The admin console of the server: start, stop and back up every machine.'
     node: pve
     kind: native
     ports:
@@ -23,6 +49,7 @@ services:
 
   - id: traefik
     name: Traefik
+    summary: The front door. Every web request from outside arrives here and is sent on to the right app.
     node: vm-docker
     kind: container
     stack: edge
@@ -47,6 +74,7 @@ services:
 
   - id: authelia
     name: Authelia
+    summary: Asks for a password and a second factor before anyone outside reaches a private app.
     node: vm-docker
     kind: container
     stack: edge
@@ -64,6 +92,7 @@ services:
 
   - id: wiki
     name: Wiki
+    summary: 'The household wiki: manuals, recipes and how-tos.'
     node: vm-docker
     kind: compose
     stack: apps
@@ -82,6 +111,7 @@ services:
 
   - id: wiki-db
     name: Wiki database
+    summary: Database that stores the wiki pages.
     node: vm-docker
     kind: container
     stack: apps
@@ -94,6 +124,7 @@ services:
 
   - id: photos
     name: Photos
+    summary: Backs up phone photos and makes them searchable.
     node: vm-docker
     kind: compose
     stack: apps
@@ -109,6 +140,7 @@ services:
 
   - id: uptime-kuma
     name: Uptime Kuma
+    summary: Checks every few minutes that apps answer, and alerts when one does not.
     node: vm-docker
     kind: container
     stack: observability
@@ -124,6 +156,7 @@ services:
 
   - id: dozzle
     name: Dozzle
+    summary: Shows the live logs of the Docker containers in a browser.
     node: vm-docker
     kind: container
     stack: observability
@@ -135,6 +168,7 @@ services:
 
   - id: adguard
     name: AdGuard Home
+    summary: DNS for the home network; blocks ads and trackers for every device.
     node: ct-dns
     kind: native
     stack: edge
@@ -150,6 +184,7 @@ services:
 
   - id: jellyfin
     name: Jellyfin
+    summary: Streams films and series to the TV, phones and browsers.
     node: ct-media
     kind: systemd
     stack: media
@@ -171,6 +206,7 @@ services:
 
   - id: wireguard
     name: WireGuard
+    summary: VPN that puts a phone or laptop on the home network from anywhere.
     node: router
     kind: native
     stack: edge
@@ -181,6 +217,7 @@ services:
   # Media: requests → Sonarr/Radarr → Prowlarr/qBittorrent → the internet.
   - id: requests
     name: Requests
+    summary: Where family members ask for a film or series; the request goes to Sonarr or Radarr.
     node: ct-media
     kind: container
     stack: media
@@ -195,6 +232,7 @@ services:
 
   - id: bazarr
     name: Bazarr
+    summary: Finds subtitles for everything in the library.
     node: ct-media
     kind: container
     stack: media
@@ -208,6 +246,7 @@ services:
 
   - id: sonarr
     name: Sonarr
+    summary: Finds TV episodes you want and sends them to qBittorrent.
     node: ct-media
     kind: container
     stack: media
@@ -223,6 +262,7 @@ services:
 
   - id: radarr
     name: Radarr
+    summary: Finds films you want and sends them to qBittorrent.
     node: ct-media
     kind: container
     stack: media
@@ -237,6 +277,7 @@ services:
 
   - id: prowlarr
     name: Prowlarr
+    summary: Keeps the list of indexers and searches them for Sonarr and Radarr.
     node: ct-media
     kind: container
     stack: media
@@ -248,6 +289,7 @@ services:
 
   - id: qbittorrent
     name: qBittorrent
+    summary: Downloads what Sonarr and Radarr ask for.
     node: ct-media
     kind: container
     stack: media
@@ -261,6 +303,7 @@ services:
   # Home automation.
   - id: home-assistant
     name: Home Assistant
+    summary: 'Runs the house: lights, heating, presence and automations.'
     node: ct-home
     kind: container
     stack: home
@@ -278,6 +321,7 @@ services:
 
   - id: frigate
     name: Frigate
+    summary: Records the cameras and detects people and cars.
     node: ct-home
     kind: container
     stack: home
@@ -293,6 +337,7 @@ services:
 
   - id: zigbee2mqtt
     name: Zigbee2MQTT
+    summary: Talks to the Zigbee sensors and switches and passes their messages on over MQTT.
     node: ct-home
     kind: container
     stack: home
@@ -304,6 +349,7 @@ services:
 
   - id: mosquitto
     name: Mosquitto
+    summary: Message bus between the sensors, Frigate and Home Assistant.
     node: ct-home
     kind: container
     stack: home
@@ -314,6 +360,7 @@ services:
   # Bots and dashboards.
   - id: notify-bot
     name: Notify bot
+    summary: Sends alerts and daily summaries to the family Telegram chat.
     node: vm-docker
     kind: container
     stack: bots
@@ -324,6 +371,7 @@ services:
 
   - id: homepage
     name: Homepage
+    summary: Start page with a tile for every app and its status.
     node: vm-docker
     kind: container
     stack: observability
@@ -344,6 +392,7 @@ services:
 
   - id: system-map
     name: System Map
+    summary: 'This map: the documentation of the whole system, with live health and logs.'
     node: vm-docker
     kind: container
     stack: observability

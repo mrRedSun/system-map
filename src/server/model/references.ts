@@ -1,6 +1,7 @@
 /** Reference checks (dangling or wrong-kind ids, parent cycles) and derived edges. */
 import { SECTION_KIND, type Edge, type EdgeKind, type Problem } from '../../shared/model.js';
 import { ID_PATTERN, SECTION_KEYS, type SectionKey } from '../../shared/schema.js';
+import { COMMON_MARKDOWN_FIELDS, MARKDOWN_FIELDS, wikiLinks } from '../../shared/wikilinks.js';
 import type { Origin } from './merge.js';
 import { formatPath, lineOf, type PathSegment } from './parse.js';
 import type { Sections } from './validate.js';
@@ -64,6 +65,18 @@ export function collectRefs(s: Sections): RefSite[] {
   for (const b of s.backups) addAll(b.id, 'backups', 'from', b.from);
   for (const h of s.history) addAll(h.id, 'history', 'refs', h.refs);
   for (const q of s.open_questions) addAll(q.id, 'open_questions', 'refs', q.refs);
+  for (const a of s.articles) addAll(a.id, 'articles', 'refs', a.refs);
+  // `[[id]]` links in markdown fields.
+  for (const section of SECTION_KEYS) {
+    const fields = [...COMMON_MARKDOWN_FIELDS, ...(MARKDOWN_FIELDS[section] ?? [])];
+    for (const e of s[section]) {
+      for (const path of fields) {
+        const text = valueAt(e, path);
+        if (typeof text !== 'string') continue;
+        for (const id of wikiLinks(text)) add(e.id, section, path, id);
+      }
+    }
+  }
   return out;
 }
 
@@ -177,4 +190,13 @@ export function deriveEdges(s: Sections): Edge[] {
   for (const m of s.monitors) add('monitors', m.id, m.service ?? m.node, m.name);
   for (const b of s.backups) for (const f of b.from ?? []) add('backs-up', b.id, f, b.what);
   return edges;
+}
+
+function valueAt(value: unknown, path: readonly PathSegment[]): unknown {
+  let cur = value;
+  for (const seg of path) {
+    if (typeof cur !== 'object' || cur === null) return undefined;
+    cur = (cur as Record<string | number, unknown>)[seg];
+  }
+  return cur;
 }

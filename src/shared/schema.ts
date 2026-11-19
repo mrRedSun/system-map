@@ -153,8 +153,13 @@ export function buildSchemas(mode: SchemaMode) {
     comment: opt(str),
   });
 
+  const summary = Schema.String.annotate({
+    description: 'One or two plain-language sentences: what it is for (shown in the wiki)',
+  });
+
   const node = obj({
     ...base,
+    summary: opt(summary),
     kind: Schema.Literals(NODE_KINDS),
     parent: opt(ref),
     vmid: opt(int),
@@ -217,6 +222,7 @@ export function buildSchemas(mode: SchemaMode) {
 
   const service = obj({
     ...base,
+    summary: opt(summary),
     name: str,
     node: ref,
     kind: Schema.Literals(SERVICE_KINDS),
@@ -275,6 +281,10 @@ export function buildSchemas(mode: SchemaMode) {
 
   const stack = obj({
     ...base,
+    summary: opt(summary),
+    description: opt(
+      Schema.String.annotate({ description: 'Markdown: how the stack works, end to end' }),
+    ),
     color: opt(Schema.Literals(STACK_COLORS).annotate({ description: 'Tint of the group box' })),
     order: opt(int.annotate({ description: 'Sort key for stacks; lower first, then file order' })),
   });
@@ -350,6 +360,14 @@ export function buildSchemas(mode: SchemaMode) {
 
   const openQuestion = obj({ ...base, question: nonEmpty, refs: opt(refs) });
 
+  const article = obj({
+    ...base,
+    title: nonEmpty,
+    order: opt(int.annotate({ description: 'Sort key; lower first, then file order' })),
+    refs: opt(refs.annotate({ description: 'Entities the article is about' })),
+    body: md.annotate({ description: 'Markdown; `[[id]]` links to an entity' }),
+  });
+
   const sections = {
     policies: policy,
     procedures: procedure,
@@ -364,6 +382,7 @@ export function buildSchemas(mode: SchemaMode) {
     backups: backup,
     history,
     open_questions: openQuestion,
+    articles: article,
   };
 
   /** Shape of one data file. One file (normally the one with `meta`) declares `version: 1`. */
@@ -387,6 +406,7 @@ export function buildSchemas(mode: SchemaMode) {
     backups: opt(Schema.Array(backup)),
     history: opt(Schema.Array(history)),
     open_questions: opt(Schema.Array(openQuestion)),
+    articles: opt(Schema.Array(article)),
   });
 
   return { meta, sections, file };
@@ -413,6 +433,7 @@ export type Job = Sections['jobs']['Type'];
 export type Backup = Sections['backups']['Type'];
 export type HistoryEntry = Sections['history']['Type'];
 export type OpenQuestion = Sections['open_questions']['Type'];
+export type Article = Sections['articles']['Type'];
 export type SectionItem<K extends SectionKey> = Sections[K]['Type'];
 export type AnyEntity = SectionItem<SectionKey>;
 

@@ -37,4 +37,26 @@ describe('hash routes', () => {
     const loc = { view: 'graph' as const, graph: 'apps' as const, entity: 'a b' };
     expect(parseHash(formatHash(loc))).toEqual(loc);
   });
+
+  it('addresses wiki pages, index pages and a panel on top', () => {
+    expect(parseHash('#/wiki')).toEqual({ view: 'wiki' });
+    expect(parseHash('#/wiki/sonarr')).toEqual({ view: 'wiki', page: 'sonarr' });
+    expect(parseHash('#/wiki/ref/coverage')).toEqual({ view: 'wiki', page: 'ref/coverage' });
+    // An entity that happens to be called `ref` is still reachable.
+    expect(parseHash('#/wiki/ref')).toEqual({ view: 'wiki', page: 'ref' });
+    expect(parseHash('#/wiki/sonarr/n/sonarr')).toEqual({
+      view: 'wiki',
+      page: 'sonarr',
+      entity: 'sonarr',
+    });
+    for (const loc of [
+      { view: 'wiki' as const },
+      { view: 'wiki' as const, page: 'a b' },
+      { view: 'wiki' as const, page: 'ref/history' },
+      { view: 'wiki' as const, page: 'ref', entity: 'x' },
+    ]) {
+      expect(parseHash(formatHash(loc))).toEqual(loc);
+    }
+    expect(formatHash({ view: 'routes', page: 'x' })).toBe('#/routes');
+  });
 });

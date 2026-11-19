@@ -10,6 +10,7 @@ import {
   Container,
   Cpu,
   ExternalLink,
+  FileText,
   Globe,
   HardDrive,
   HelpCircle,
@@ -17,6 +18,7 @@ import {
   Layers,
   LayoutGrid,
   ListChecks,
+  type LucideIcon,
   Monitor,
   Network,
   Router,
@@ -28,7 +30,6 @@ import {
   Timer,
   Waypoints,
   Workflow,
-  type LucideIcon,
 } from 'lucide-react';
 import type { SystemModel } from '../../shared/model';
 import type { EntityRef } from './model-index';
@@ -70,6 +71,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   procedures: BookOpen,
   history: History,
   open_questions: HelpCircle,
+  articles: FileText,
 };
 
 export const GROUP_ICONS: Record<string, LucideIcon> = {

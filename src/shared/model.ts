@@ -19,6 +19,7 @@ export const SECTION_KIND = {
   backups: 'backup',
   history: 'history',
   open_questions: 'question',
+  articles: 'article',
 } as const satisfies Record<SectionKey, string>;
 
 export type EntityKind = (typeof SECTION_KIND)[SectionKey];
@@ -95,6 +96,7 @@ export const SystemModel = Schema.Struct({
   backups: Schema.Array(s.backups),
   history: Schema.Array(s.history),
   open_questions: Schema.Array(s.open_questions),
+  articles: Schema.Array(s.articles),
   /** Relationships derived from references. */
   edges: Schema.Array(Edge),
   problems: Schema.Array(Problem),

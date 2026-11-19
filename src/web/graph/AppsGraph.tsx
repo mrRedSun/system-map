@@ -27,6 +27,7 @@ import { statusOf } from '@/lib/model-index';
 import { useNarrow } from '@/lib/media';
 import { useAtom } from '@effect/atom-react';
 import { appsExternalsAtom, appsIngressAtom, showRetiredAtom } from '@/lib/prefs';
+import { cn } from '@/lib/utils';
 import { iconFor, kindLabel } from '@/lib/visuals';
 import { AppEdge, type AppFlowEdge } from './app-edge';
 import { edgeSides, labelSize, placeLabels, type Rect } from './edge-labels';
@@ -76,6 +77,7 @@ export function AppsGraph({
   healthOf,
   mode,
   onMode,
+  embedded = false,
 }: GraphViewProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [showRetired, setShowRetired] = useAtom(showRetiredAtom);
@@ -135,6 +137,7 @@ export function AppsGraph({
   }, [highlight]);
 
   useEffect(() => {
+    if (embedded) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'f' || e.metaKey || e.ctrlKey || e.altKey || typing(e)) return;
       e.preventDefault();
@@ -142,7 +145,7 @@ export function AppsGraph({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleFocus]);
+  }, [toggleFocus, embedded]);
 
   const container = useRef<HTMLDivElement>(null);
   const toolbar = useRef<HTMLDivElement>(null);
@@ -399,11 +402,16 @@ export function AppsGraph({
         minZoom={0.05}
         maxZoom={2}
         onlyRenderVisibleElements={false}
+        zoomOnScroll={!embedded}
+        preventScrolling={!embedded}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
         <Controls showInteractive={false} position="bottom-left" />
 
-        <Panel position="top-left" className="!m-2 max-w-[calc(100%-1rem)]">
+        <Panel
+          position="top-left"
+          className={cn('!m-2 max-w-[calc(100%-1rem)]', embedded && 'hidden')}
+        >
           <div
             ref={toolbar}
             className="flex flex-wrap items-center gap-1 rounded-xl border bg-card/90 p-1 shadow-sm backdrop-blur"

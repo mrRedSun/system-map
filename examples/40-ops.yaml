@@ -72,3 +72,32 @@ open_questions:
   - id: q-kuma-push
     question: Does the offsite job ping kuma-7 even when restic exits non-zero?
     refs: [job-restic, kuma-7]
+
+# Hand-written wiki pages. `[[id]]` links to an entity.
+articles:
+  - id: art-request-path
+    title: How a request reaches an app
+    order: 1
+    refs: [traefik, authelia, router]
+    body: |
+      ## From the browser to the server
+
+      A visitor opens `wiki.example.net`. Cloudflare answers DNS and proxies the request to the
+      home connection, where the [[router]] forwards port 443 to [[traefik]] on [[vm-docker]].
+
+      ## Inside
+
+      Traefik matches the hostname to a route. Routes marked with Authelia send the visitor to
+      [[authelia]] first; after login the request continues to the app.
+
+      ## When it does not work
+
+      - Check the route in the Routes view and the app's health dot.
+      - Look at Traefik's logs for the hostname.
+  - id: art-backups
+    title: How backups work
+    order: 2
+    refs: [tank]
+    body: |
+      Every night the server snapshots all guests to [[tank]]. Photos and the wiki database are
+      also copied offsite. To restore a guest, follow the procedure in the Policies view.

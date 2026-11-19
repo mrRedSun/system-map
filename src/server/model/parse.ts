@@ -15,7 +15,8 @@ export interface ParsedFile {
   data: unknown;
 }
 
-export type PathSegment = string | number;
+export type { PathSegment } from '../../shared/paths.js';
+import type { PathSegment } from '../../shared/paths.js';
 
 export interface ParseResult {
   file: ParsedFile;

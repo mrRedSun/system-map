@@ -72,6 +72,21 @@ the URL (`#/graph/apps`, `#/graph/infra`, `#/graph/apps/n/<id>`).
 The graph transforms (`src/web/graph/apps.ts`, `topology.ts`), the layout and the edge label
 placement are pure functions with unit tests.
 
+## Wiki
+
+`#/wiki` turns the same data into readable pages: a home page with counts, current health, stacks,
+articles and recent history; a page per stack (summary, how it works, a small Apps graph, its
+apps); a page per app (where it runs, how to reach it, what it talks to and what uses it, health,
+logs, backups and jobs, secret locations, rules, history, open questions); pages per machine and
+per article; and index pages for policies, procedures, history, open questions and documentation
+coverage (what still lacks a `summary`). Missing facts show as "not documented yet" hints. Pages
+have breadcrumbs, a table of contents, permalinks (`#/wiki/<id>`) and print cleanly. The search
+palette opens wiki pages while in the wiki, and the detail panel links to an entity's wiki page.
+
+The wiki reads `summary` on apps, machines and stacks, `description` (markdown) on stacks, and the
+hand-written `articles` list. In any markdown field, `[[id]]` links to an entity; an unknown id is
+a validation error.
+
 ## Data
 
 Read [docs/data.md](docs/data.md) before editing data files. In short:

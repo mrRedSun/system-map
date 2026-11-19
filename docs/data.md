@@ -73,6 +73,44 @@ services:
 - Free-text call targets that differ only in case or spacing (`Telegram API`, `telegram api`) are
   one external card.
 
+## Wiki text
+
+The wiki (`#/wiki`) is generated from the data. Three optional fields carry the plain-language
+part, and `articles` holds hand-written pages:
+
+```yaml
+services:
+  - id: sonarr
+    summary: Finds TV episodes you want and sends them to qBittorrent. # what it does for you
+    description: Sonarr v4, SQLite, API key in .env # technical detail stays here
+
+nodes:
+  - id: ct-media
+    summary: Container for the media stack, close to the media share.
+
+stacks:
+  - id: media
+    summary: Asking for a film or series, downloading it, and watching it on any screen.
+    description: | # markdown: how the stack works end to end
+      1. Someone asks for a title in [[requests]].
+      2. [[sonarr]] or [[radarr]] search through [[prowlarr]] ...
+
+articles: # hand-written pages, listed in `order`, then file order
+  - id: art-request-path
+    title: How a request reaches an app
+    order: 1
+    refs: [traefik, authelia] # what it is about
+    body: |
+      Markdown. [[traefik]] links to Traefik's page.
+```
+
+- `summary` is one or two sentences in plain language; keep it short, it leads the page and fills
+  tables.
+- `[[id]]` works in every markdown field (`notes`, `summary`, stack `description`, policy `rule` and
+  `why`, procedure and article `body`, backup `restore`, history `rollback`, nested `notes`). The id
+  must exist; an unknown one is an error with file and line.
+- The coverage page (`#/wiki/ref/coverage`) lists apps, machines and stacks without a `summary`.
+
 ## Derived edges
 
 The server computes these; do not write them:

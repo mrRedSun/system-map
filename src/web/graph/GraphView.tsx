@@ -48,6 +48,8 @@ export interface GraphViewProps {
   healthOf?: (id: string) => HealthStatus | undefined;
   mode: GraphMode;
   onMode: (mode: GraphMode) => void;
+  /** Small read-only view inside a page: no toolbar or controls, page scrolling not captured. */
+  embedded?: boolean;
 }
 
 const NODE_TYPES = { entity: EntityNode, container: ContainerNode };

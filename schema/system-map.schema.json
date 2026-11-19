@@ -445,6 +445,10 @@
               "additionalProperties": true
             }
           },
+          "summary": {
+            "type": "string",
+            "description": "One or two plain-language sentences: what it is for (shown in the wiki)"
+          },
           "kind": {
             "type": "string",
             "enum": [
@@ -789,6 +793,10 @@
               "additionalProperties": true
             }
           },
+          "summary": {
+            "type": "string",
+            "description": "One or two plain-language sentences: what it is for (shown in the wiki)"
+          },
           "node": {
             "type": "string",
             "minLength": 1,
@@ -1093,7 +1101,8 @@
             "type": "string"
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "Markdown: how the stack works, end to end"
           },
           "notes": {
             "type": "string",
@@ -1123,6 +1132,10 @@
               ],
               "additionalProperties": true
             }
+          },
+          "summary": {
+            "type": "string",
+            "description": "One or two plain-language sentences: what it is for (shown in the wiki)"
           },
           "color": {
             "type": "string",
@@ -1650,6 +1663,82 @@
         "required": [
           "id",
           "question"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "articles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Markdown"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "order": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991,
+            "description": "Sort key; lower first, then file order"
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Entity id"
+            },
+            "description": "Entities the article is about"
+          },
+          "body": {
+            "type": "string",
+            "description": "Markdown; `[[id]]` links to an entity"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "body"
         ],
         "additionalProperties": true
       }

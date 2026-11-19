@@ -88,6 +88,14 @@ describe('merge', () => {
     ]);
   });
 
+  it('warns when a later scalar replaces an object from an earlier file', () => {
+    const model = build(
+      file('a.yaml', 'version: 1\nmeta: { title: { x: 1 } }\n'),
+      file('b.yaml', 'version: 1\nmeta: { title: Home }\n'),
+    );
+    expect(model.problems.map((p) => p.code)).toEqual(['merge-conflict']);
+  });
+
   it('reports a missing version, unknown top-level keys, and non-list sections', () => {
     const model = build(file('a.yaml', 'nodes: {}\nextra: 1\n'));
     expect(model.problems).toEqual([

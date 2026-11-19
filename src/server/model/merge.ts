@@ -92,7 +92,14 @@ export function mergeFiles(files: readonly ParsedFile[]): MergeResult {
         result.metaFiles.push(file);
         deepMerge(result.meta, value, ['meta'], (path) => {
           const key = path.join('.');
-          const previous = metaOwners.get(key);
+          // A value replaces whatever was set at this path or below it.
+          let previous = metaOwners.get(key);
+          for (const [owned, owner] of metaOwners) {
+            if (owned.startsWith(`${key}.`)) {
+              previous ??= owner;
+              metaOwners.delete(owned);
+            }
+          }
           if (previous !== undefined) {
             problem({
               severity: 'warning',

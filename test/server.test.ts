@@ -271,3 +271,46 @@ describe('config', () => {
     }
   });
 });
+
+describe('review regressions', () => {
+  it('does not leak event-stream slots on HEAD requests', async () => {
+    put('a.yaml', HOST);
+    const store = new ModelStore(dir);
+    await store.reload();
+    const app = createApp({ store, maxEventClients: 2 });
+    for (let i = 0; i < 3; i++) {
+      expect((await app.request('/api/events', { method: 'HEAD' })).status).toBe(405);
+    }
+    const res = await app.request('/api/events');
+    expect(res.status).toBe(200);
+    await res.body!.cancel();
+    expect((await app.request('/api/logs/docker/wiki', { method: 'HEAD' })).status).toBe(405);
+    store.close();
+  });
+
+  it('keeps the last good model when an alias refers to itself', async () => {
+    put('a.yaml', HOST);
+    const store = new ModelStore(dir);
+    await store.reload();
+    put('a.yaml', 'version: 1\nnodes:\n  - { id: pve, kind: host, x: &l { s: *l } }\n');
+    await store.reload();
+    const { model } = store.current()!;
+    expect(model.stale).toBe(true);
+    expect(model.problems[0]).toMatchObject({ code: 'yaml', file: 'a.yaml' });
+    store.close();
+  });
+
+  it('ignores __proto__ keys instead of polluting prototypes', async () => {
+    put(
+      'a.yaml',
+      'version: 1\nmeta: { __proto__: { polluted: yes } }\nnodes:\n  - { id: pve, kind: host, __proto__: { logs: x } }\n',
+    );
+    const store = new ModelStore(dir);
+    await store.reload();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    const { model } = store.current()!;
+    expect(Object.getPrototypeOf(model.nodes[0])).toBe(Object.prototype);
+    expect(model.problems.map((p) => p.code)).toContain('unknown-key');
+    store.close();
+  });
+});

@@ -152,7 +152,13 @@ export class ModelStore {
 
   private schedule() {
     clearTimeout(this.debounce);
-    this.debounce = setTimeout(() => void this.reload(), this.options.debounceMs ?? 200);
+    this.debounce = setTimeout(
+      () =>
+        void this.reload().catch((err: unknown) =>
+          log.error('reload failed; keeping the current model', { error: errorMessage(err) }),
+        ),
+      this.options.debounceMs ?? 200,
+    );
   }
 
   private async rebuild(): Promise<void> {

@@ -15,6 +15,8 @@ export interface PanelTab {
   id: string;
   label: string;
   render: (id: string) => React.ReactNode;
+  /** Whether the tab applies to this entity (default: always). */
+  show?: (id: string) => boolean;
 }
 
 export const BASE_TABS: PanelTab[] = [
@@ -50,7 +52,11 @@ export function DetailPanel({
   const status = ref ? statusOf(ref.entity) : undefined;
   const exposure = exposureOf(index, id);
   const description = (ref?.entity as { description?: string } | undefined)?.description;
-  const visibleTabs = tabs.filter((t) => t.id !== 'network' || ref?.section !== 'history');
+  const visibleTabs = tabs.filter(
+    (t) => (t.show?.(id) ?? true) && (t.id !== 'network' || ref?.section !== 'history'),
+  );
+  // A tab that does not apply to the newly selected entity falls back to Overview.
+  const activeTab = visibleTabs.some((t) => t.id === tab) ? tab : 'overview';
 
   return (
     <aside
@@ -111,7 +117,11 @@ export function DetailPanel({
           No entity with id <span className="font-mono">{id}</span>.
         </p>
       ) : (
-        <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-0">
+        <Tabs
+          value={activeTab}
+          onValueChange={setTab}
+          className="flex min-h-0 flex-1 flex-col gap-0"
+        >
           <div className="overflow-x-auto border-b px-3 py-2">
             <TabsList>
               {visibleTabs.map((t) => (

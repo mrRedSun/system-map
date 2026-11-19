@@ -5,6 +5,8 @@ import { serve } from '@hono/node-server';
 import { createApp } from './app.js';
 import { ConfigError, loadConfig, type Config } from './config.js';
 import { errorMessage, log } from './log.js';
+import { DozzleProxy } from './dozzle.js';
+import { KumaClient } from './kuma.js';
 import { ModelStore } from './store.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -29,7 +31,28 @@ async function main() {
   store.watch();
 
   const shutdown = new AbortController();
-  const app = createApp({ store, publicDir: config.publicDir, shutdown: shutdown.signal });
+  const health = config.kumaUrl
+    ? new KumaClient({ url: config.kumaUrl, apiKeyFile: config.kumaApiKeyFile })
+    : undefined;
+  const logs = config.dozzleUrl
+    ? new DozzleProxy({
+        url: config.dozzleUrl,
+        // Only containers declared in the current data may be streamed.
+        allowed: (host, container) =>
+          store
+            .current()
+            ?.model.services.some(
+              (s) => s.logs?.dozzle?.host === host && s.logs.dozzle.container === container,
+            ) ?? false,
+      })
+    : undefined;
+  const app = createApp({
+    store,
+    publicDir: config.publicDir,
+    shutdown: shutdown.signal,
+    health,
+    logs,
+  });
   const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) =>
     log.info('listening', {
       port: info.port,

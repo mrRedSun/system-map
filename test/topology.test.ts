@@ -129,3 +129,21 @@ describe('dnsRecordsFor', () => {
     expect(dnsRecordsFor(examples, 'example.org')).toEqual([]);
   });
 });
+
+describe('entityHealth', () => {
+  it('rolls monitor status up to services and their nodes, worst first', async () => {
+    const { entityHealth } = await import('../src/web/lib/health.js');
+    const h = entityHealth(examples, index, {
+      '1': { status: 'up', name: 'Wiki' },
+      '2': { status: 'down', name: 'Authelia' },
+      '4': { status: 'up', name: 'DNS' },
+    });
+    expect(h.get('kuma-1')).toBe('up');
+    expect(h.get('wiki')).toBe('up');
+    expect(h.get('authelia')).toBe('down');
+    expect(h.get('vm-docker')).toBe('down');
+    expect(h.get('ct-dns')).toBe('up');
+    expect(h.get('pve')).toBe('down');
+    expect(h.get('jellyfin')).toBeUndefined();
+  });
+});

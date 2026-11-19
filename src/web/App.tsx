@@ -1,6 +1,6 @@
 import { AlertTriangle, Menu, Moon, Search, Sun, WifiOff } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
-import type { HealthStatus } from '../shared/model';
+import type { SystemModel } from '../shared/model';
 import { AppContext, type AppContextValue } from '@/app-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,9 +16,12 @@ import { GraphView } from '@/graph/GraphView';
 import { useModel, useWhoAmI } from '@/lib/api';
 import { backRefs, indexModel } from '@/lib/model-index';
 import { VIEWS, formatHash, useLocation, type View } from '@/lib/router';
+import { useEntityHealth, useHealth } from '@/lib/health';
 import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
-import { DetailPanel } from '@/panel/DetailPanel';
+import { BASE_TABS, DetailPanel, type PanelTab } from '@/panel/DetailPanel';
+import { HealthTab } from '@/panel/health';
+import { LogsTab } from '@/panel/logs';
 import { CommandPalette, useCommandShortcut } from '@/search/CommandPalette';
 import { VIEW_META } from '@/views/meta';
 import {
@@ -43,8 +46,6 @@ const PAGES: Record<Exclude<View, 'graph'>, () => React.ReactNode> = {
   problems: () => <ProblemsView />,
 };
 
-const noHealth = (): HealthStatus | undefined => undefined;
-
 export function App() {
   const { model, error, connection } = useModel();
   const me = useWhoAmI();
@@ -52,19 +53,41 @@ export function App() {
   const [location, navigate] = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
   useCommandShortcut(setSearchOpen);
+  const health = useHealth();
+  const index = useMemo(() => (model ? indexModel(model) : undefined), [model]);
+  const statuses = useEntityHealth(model, index, health);
 
   const ctx = useMemo<AppContextValue | undefined>(() => {
-    if (!model) return undefined;
+    if (!model || !index) return undefined;
     return {
       model,
-      index: indexModel(model),
+      index,
       backRefs: backRefs(model),
       location,
       navigate,
       hrefFor: (id) => formatHash({ view: location.view, entity: id }),
-      healthOf: noHealth,
+      healthOf: (id) => statuses.get(id),
     };
-  }, [model, location, navigate]);
+  }, [model, index, location, navigate, statuses]);
+
+  const tabs = useMemo<PanelTab[]>(() => {
+    const healthTab: PanelTab = {
+      id: 'health',
+      label: 'Health',
+      render: (id) => <HealthTab id={id} monitors={health.monitors} error={health.error} />,
+    };
+    const logsTab: PanelTab = {
+      id: 'logs',
+      label: 'Logs',
+      render: (id) => {
+        const s = model?.services.find((x) => x.id === id) as SystemModel['services'][number];
+        const d = s.logs!.dozzle!;
+        return <LogsTab key={id} host={d.host} container={d.container} />;
+      },
+      show: (id) => Boolean(model?.services.find((x) => x.id === id)?.logs?.dozzle),
+    };
+    return [...BASE_TABS.slice(0, 3), healthTab, logsTab, ...BASE_TABS.slice(3)];
+  }, [health, model]);
 
   const closePanel = useCallback(
     () => navigate({ view: location.view }),
@@ -196,7 +219,9 @@ export function App() {
               ) : (
                 PAGES[location.view]()
               )}
-              {location.entity && <DetailPanel id={location.entity} onClose={closePanel} />}
+              {location.entity && (
+                <DetailPanel id={location.entity} onClose={closePanel} tabs={tabs} />
+              )}
               <CommandPalette
                 open={searchOpen}
                 onOpenChange={setSearchOpen}

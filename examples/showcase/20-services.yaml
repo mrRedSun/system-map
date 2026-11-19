@@ -1,0 +1,732 @@
+# yaml-language-server: $schema=../../schema/system-map.schema.json
+
+# Stacks group apps in the Apps graph. Services without `stack` land in "Other".
+stacks:
+  - id: edge
+    name: Front door
+    color: blue
+    order: 1
+    summary: How requests from the internet reach the apps, and who is let in.
+    description: |
+      Requests for `*.home.example` go through Cloudflare to the [[router]], which forwards
+      port 443 to [[traefik]]. Traefik asks [[crowdsec]] whether the visitor's address is known
+      to be abusive, then picks the app by hostname. Private apps first send the visitor to
+      [[authelia]] for a password and a one-time code.
+
+      Inside the house, [[adguard]] answers DNS for every device and blocks ads and trackers.
+      From outside, [[wireguard]] puts a phone or laptop on the home network, so admin pages
+      never need a public route.
+  - id: media
+    name: Films and series
+    color: violet
+    order: 2
+    summary: Asking for a film or series, downloading it, and watching it on any screen.
+    description: |
+      1. Someone asks for a title in [[jellyseerr]], on the web or through [[media-bot]].
+      2. [[sonarr]] (series) or [[radarr]] (films) search the indexers through [[prowlarr]].
+      3. The best release goes to [[qbittorrent]], which downloads into the media share on [[tank]].
+      4. Sonarr or Radarr rename it into the library, and [[bazarr]] adds subtitles.
+      5. [[jellyfin]] picks it up and streams it to the TV, phones and browsers.
+
+      Everything runs on [[ct-media]], next to the media share, so files move without
+      crossing the network.
+  - id: home
+    name: Smart home
+    color: green
+    order: 3
+    summary: Lights, heating and sensors, plus the cameras around the house.
+    description: |
+      Zigbee sensors and switches talk to the USB stick on [[ct-home]]; [[zigbee2mqtt]] turns
+      their radio messages into MQTT on [[mosquitto]]. [[home-assistant]] listens there and runs
+      the automations.
+
+      The cameras stream to [[frigate]], which records them and spots people and cars. Its
+      events also go through Mosquitto, so Home Assistant and [[door-bot]] react when someone
+      rings the doorbell.
+  - id: files
+    name: Photos and files
+    color: teal
+    order: 4
+    summary: Phone photos, scanned paperwork and shared folders, kept safe in one place.
+    description: |
+      - Phones upload new pictures to [[immich]], which stores them on [[tank]] and lets
+        [[immich-ml]] tag faces and objects for search.
+      - Scanned letters land in [[paperless]], which reads the text and files them by sender.
+      - Laptops keep their folders in sync with [[syncthing]]; [[samba]] serves the same files
+        to the TV and the printer.
+
+      Immich, Paperless and the git forge keep their data in [[postgres]] on [[ct-db]], which
+      is dumped every night and copied offsite (see [[backup-offsite]]).
+  - id: ai-dev
+    name: AI and code
+    color: indigo
+    order: 5
+    summary: A private chat assistant and a small git setup for home projects.
+    description: |
+      [[ollama]] runs language models on the graphics card in [[vm-ai]]. [[open-webui]] is the
+      chat page in front of it, and [[household-bot]] and [[code-server]] use it too.
+
+      Home projects live in [[forgejo]]. Every push starts a job on [[forgejo-runner]], which
+      builds and tests the project in a throwaway container.
+  - id: bots
+    name: Chat bots
+    color: pink
+    order: 6
+    summary: Small Telegram bots that let the family use the house from a chat.
+    description: |
+      All three bots run on [[vm-docker]] and talk to the Telegram Bot API over long polling,
+      so nothing needs a public route.
+
+      - [[household-bot]] answers questions and switches things through [[home-assistant]].
+      - [[media-bot]] takes film and series requests and passes them to [[jellyseerr]].
+      - [[door-bot]] sends a snapshot from [[frigate]] when someone rings.
+  - id: observe
+    name: Monitoring
+    color: amber
+    order: 7
+    summary: Knowing what runs, what broke, and where to look.
+    description: |
+      [[uptime-kuma]] checks every app and machine every minute and sends a Telegram alert when
+      one stops answering. [[prometheus]] collects metrics and [[grafana]] draws them.
+      [[dozzle]] shows the live container logs from both Docker hosts.
+
+      [[homepage]] is the start page with a tile per app, and [[system-map]] (this map) ties it
+      all together with the documentation.
+
+services:
+  # Front door.
+  - id: traefik
+    name: Traefik
+    summary: The front door. Every web request from outside arrives here and is sent on to the right app.
+    node: vm-docker
+    kind: container
+    stack: edge
+    image: traefik
+    version: v3.6.4
+    pin: traefik:v3.6.4
+    ports:
+      - { port: 443, proto: tcp, bind: 0.0.0.0, auth: none, exposure: public, purpose: HTTPS entrypoint }
+      - { port: 8080, proto: tcp, bind: 127.0.0.1, auth: none, exposure: internal, purpose: Dashboard and metrics }
+    auth: none
+    calls:
+      - { target: authelia, via: forwardAuth, port: 9091, purpose: Authentication }
+      - { target: crowdsec, via: http, port: 8080, purpose: Bouncer decisions }
+      - { target: jellyfin, via: http, port: 8096 }
+      - { target: jellyseerr, via: http, port: 5055 }
+      - { target: immich, via: http, port: 2283 }
+      - { target: paperless, via: http, port: 8000 }
+      - { target: home-assistant, via: http, port: 8123 }
+      - { target: forgejo, via: http, port: 3000 }
+      - { target: Cloudflare API, via: https, purpose: ACME DNS challenge }
+    logs: { dozzle: { host: docker-host, container: traefik } }
+    paths: { config: /opt/stacks/traefik, dynamic: /opt/stacks/traefik/dynamic }
+    secrets:
+      - { path: /opt/stacks/traefik/.env, purpose: DNS API token for certificates }
+    update: { command: cd /opt/stacks/traefik && docker compose pull && docker compose up -d }
+
+  - id: authelia
+    name: Authelia
+    summary: Asks for a password and a second factor before anyone outside reaches a private app.
+    node: vm-docker
+    kind: container
+    stack: edge
+    image: authelia/authelia
+    version: 4.39.14
+    pin: authelia/authelia:4.39.14
+    ports:
+      - { port: 9091, proto: tcp, auth: none, exposure: internal, purpose: forwardAuth and login portal }
+    urls:
+      - { label: Login portal, url: 'https://auth.home.example/' }
+    auth: own
+    calls:
+      - { target: postgres, via: postgres, port: 5432, purpose: Users and sessions }
+      - { target: smtp.example.net, via: smtp, port: 587, purpose: Password reset mail }
+    health: { kuma: [kuma-1] }
+    logs: { dozzle: { host: docker-host, container: authelia } }
+    notes: Two-factor (TOTP or passkey) is **required** for every user.
+
+  - id: crowdsec
+    name: CrowdSec
+    summary: Reads Traefik's logs, spots attackers, and tells Traefik to block them.
+    node: vm-docker
+    kind: container
+    stack: edge
+    image: crowdsecurity/crowdsec
+    version: v1.7.3
+    ports:
+      - { port: 8080, proto: tcp, auth: token, exposure: internal, purpose: Local API for bouncers }
+    auth: token
+    calls:
+      - { target: CrowdSec Central API, via: https, purpose: Shared blocklists }
+
+  - id: adguard
+    name: AdGuard Home
+    summary: DNS for the home network; blocks ads and trackers for every device.
+    node: ct-dns
+    kind: native
+    stack: edge
+    version: v0.107.71
+    ports:
+      - { port: 53, proto: udp, auth: none, exposure: lan, purpose: DNS }
+      - { port: 53, proto: tcp, auth: none, exposure: lan, purpose: DNS }
+      - { port: 3000, proto: tcp, auth: own, exposure: lan, purpose: Admin UI }
+    auth: own
+    calls:
+      - { target: Quad9, via: DNS-over-TLS, port: 853, purpose: Upstream resolver }
+    health: { kuma: [kuma-8] }
+
+  - id: wireguard
+    name: WireGuard
+    summary: VPN that puts a phone or laptop on the home network from anywhere.
+    node: router
+    kind: native
+    stack: edge
+    ports:
+      - { port: 51820, proto: udp, auth: key, exposure: public, purpose: VPN }
+    auth: key
+    notes: One peer per device; peers live in the router config, keys never leave the devices.
+
+  # Films and series.
+  - id: jellyfin
+    name: Jellyfin
+    summary: Streams films and series to the TV, phones and browsers.
+    node: ct-media
+    kind: container
+    stack: media
+    image: jellyfin/jellyfin
+    version: 10.11.3
+    pin: jellyfin/jellyfin:10.11.3
+    ports:
+      - { port: 8096, proto: tcp, auth: own, exposure: public, purpose: Web and clients }
+    urls:
+      - { label: Watch, url: 'https://watch.home.example/' }
+    auth: own
+    health: { kuma: [kuma-2] }
+    logs: { dozzle: { host: media-host, container: jellyfin } }
+    notes: Transcodes on the integrated GPU passed through to [[ct-media]].
+
+  - id: jellyseerr
+    name: Jellyseerr
+    summary: Where family members ask for a film or series; the request goes to Sonarr or Radarr.
+    node: ct-media
+    kind: container
+    stack: media
+    image: fallenbagel/jellyseerr
+    version: 2.7.3
+    ports:
+      - { port: 5055, proto: tcp, auth: own, exposure: public, purpose: Web }
+    urls:
+      - { label: Requests, url: 'https://requests.home.example/' }
+    auth: own
+    calls:
+      - { target: sonarr, via: http, port: 8989, purpose: Add series }
+      - { target: radarr, via: http, port: 7878, purpose: Add films }
+      - { target: jellyfin, via: http, port: 8096, purpose: Sign-in and availability }
+      - { target: TMDB API, via: https, purpose: Metadata }
+    health: { kuma: [kuma-3] }
+
+  - id: sonarr
+    name: Sonarr
+    summary: Finds the TV episodes you want and sends them to qBittorrent.
+    node: ct-media
+    kind: container
+    stack: media
+    image: linuxserver/sonarr
+    version: 4.0.16
+    ports:
+      - { port: 8989, proto: tcp, auth: own, exposure: lan, purpose: Web and API }
+    auth: own
+    calls:
+      - { target: prowlarr, via: http, port: 9696, purpose: Indexer search }
+      - { target: qbittorrent, via: http, port: 8081, purpose: Downloads }
+      - { target: jellyfin, via: http, port: 8096, purpose: Library refresh }
+      - { target: TVDB API, via: https, purpose: Metadata }
+    health: { kuma: [kuma-9] }
+    logs: { dozzle: { host: media-host, container: sonarr } }
+
+  - id: radarr
+    name: Radarr
+    summary: Finds the films you want and sends them to qBittorrent.
+    node: ct-media
+    kind: container
+    stack: media
+    image: linuxserver/radarr
+    version: 6.0.4
+    ports:
+      - { port: 7878, proto: tcp, auth: own, exposure: lan, purpose: Web and API }
+    auth: own
+    calls:
+      - { target: prowlarr, via: http, port: 9696, purpose: Indexer search }
+      - { target: qbittorrent, via: http, port: 8081, purpose: Downloads }
+      - { target: jellyfin, via: http, port: 8096, purpose: Library refresh }
+      - { target: TMDB API, via: https, purpose: Metadata }
+    health: { kuma: [kuma-10] }
+    logs: { dozzle: { host: media-host, container: radarr } }
+
+  - id: prowlarr
+    name: Prowlarr
+    summary: Keeps the list of indexers and searches them for Sonarr and Radarr.
+    node: ct-media
+    kind: container
+    stack: media
+    image: linuxserver/prowlarr
+    version: 2.1.5
+    ports:
+      - { port: 9696, proto: tcp, auth: own, exposure: lan, purpose: Web and API }
+    auth: own
+    calls:
+      - { target: Torrent indexers, via: https, purpose: Search }
+
+  - id: bazarr
+    name: Bazarr
+    summary: Finds subtitles for everything in the library.
+    node: ct-media
+    kind: container
+    stack: media
+    image: linuxserver/bazarr
+    version: 1.5.3
+    ports:
+      - { port: 6767, proto: tcp, auth: own, exposure: lan, purpose: Web }
+    auth: own
+    calls:
+      - { target: sonarr, via: http, port: 8989, purpose: Episode list }
+      - { target: radarr, via: http, port: 7878, purpose: Film list }
+      - { target: OpenSubtitles API, via: https, purpose: Subtitles }
+
+  - id: qbittorrent
+    name: qBittorrent
+    summary: Downloads what Sonarr and Radarr ask for.
+    node: ct-media
+    kind: container
+    stack: media
+    image: linuxserver/qbittorrent
+    version: 5.1.2
+    ports:
+      - { port: 8081, proto: tcp, auth: own, exposure: lan, purpose: Web UI and API }
+      - { port: 51413, proto: tcp, auth: none, exposure: public, purpose: Peers }
+    auth: own
+    calls:
+      - { target: BitTorrent peers, via: bittorrent, port: 51413 }
+    health: { kuma: [kuma-11] }
+    logs: { dozzle: { host: media-host, container: qbittorrent } }
+
+  - id: tdarr
+    name: Tdarr
+    summary: Re-encodes old files to a smaller format overnight.
+    node: ct-media
+    kind: container
+    stack: media
+    status: deliberately-stopped
+    image: haveagitgat/tdarr
+    version: 2.45.01
+    schedule: nightly 01:00-06:00
+    notes: Stopped until the disk pool has room for the temporary copies again.
+
+  # Smart home.
+  - id: home-assistant
+    name: Home Assistant
+    summary: 'Runs the house: lights, heating, presence and automations.'
+    node: ct-home
+    kind: container
+    stack: home
+    image: home-assistant/home-assistant
+    version: 2026.11.2
+    ports:
+      - { port: 8123, proto: tcp, auth: own, exposure: public, purpose: Web and app }
+    urls:
+      - { label: Home, url: 'https://ha.home.example/' }
+    auth: own
+    calls:
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Device state }
+      - { target: frigate, via: http, port: 5000, purpose: Events and clips }
+      - { target: frigate, via: rtsp, port: 8554, purpose: Live camera streams }
+      - { target: phone, via: https, purpose: Push notifications }
+      - { target: Weather service API, via: https, purpose: Forecast }
+    health: { kuma: [kuma-6] }
+
+  - id: mosquitto
+    name: Mosquitto
+    summary: Message bus between the sensors, the cameras and Home Assistant.
+    node: ct-home
+    kind: container
+    stack: home
+    image: eclipse-mosquitto
+    version: 2.0.22
+    ports:
+      - { port: 1883, proto: tcp, auth: own, exposure: lan, purpose: MQTT }
+    auth: own
+    health: { kuma: [kuma-12] }
+
+  - id: zigbee2mqtt
+    name: Zigbee2MQTT
+    summary: Talks to the Zigbee sensors and switches and passes their messages on over MQTT.
+    node: ct-home
+    kind: container
+    stack: home
+    image: koenkk/zigbee2mqtt
+    version: 2.6.3
+    ports:
+      - { port: 8080, proto: tcp, auth: none, exposure: internal, purpose: Web }
+    auth: none
+    calls:
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Device bridge }
+
+  - id: frigate
+    name: Frigate
+    summary: Records the cameras and spots people and cars.
+    node: ct-home
+    kind: container
+    stack: home
+    image: blakeblackshear/frigate
+    version: 0.16.2
+    ports:
+      - { port: 5000, proto: tcp, auth: none, exposure: lan, purpose: Web and API }
+      - { port: 8554, proto: tcp, auth: none, exposure: lan, purpose: RTSP restream }
+    auth: none
+    calls:
+      - { target: cam-front, via: rtsp, port: 554, purpose: Camera stream }
+      - { target: cam-garage, via: rtsp, port: 554, purpose: Camera stream }
+      - { target: cam-garden, via: rtsp, port: 554, purpose: Camera stream }
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Detection events }
+    notes: Recordings are kept 14 days on [[tank]]; they are not backed up.
+
+  # Photos and files.
+  - id: immich
+    name: Immich
+    summary: Backs up phone photos and makes them searchable by face, place and thing.
+    node: vm-docker
+    kind: compose
+    stack: files
+    image: immich-app/immich-server
+    version: v2.3.1
+    ports:
+      - { port: 2283, proto: tcp, auth: own, exposure: public, purpose: Web and mobile app }
+    urls:
+      - { label: Photos, url: 'https://photos.home.example/' }
+    auth: own
+    calls:
+      - { target: postgres, via: postgres, port: 5432, purpose: Library index }
+      - { target: immich-ml, via: http, port: 3003, purpose: Faces and smart search }
+    health: { kuma: [kuma-4] }
+    logs: { dozzle: { host: docker-host, container: immich } }
+    backup: { how: 'Files on tank/photos; index in the nightly database dump', where: tank/photos }
+
+  - id: immich-ml
+    name: Immich machine learning
+    node: vm-docker
+    kind: container
+    stack: files
+    image: immich-app/immich-machine-learning
+    version: v2.3.1
+    ports:
+      - { port: 3003, proto: tcp, auth: none, exposure: internal }
+    auth: none
+    calls:
+      - { target: Model hub, via: https, purpose: First-run model download }
+
+  - id: paperless
+    name: Paperless-ngx
+    summary: Reads scanned letters and bills, and files them so they can be found again.
+    node: vm-docker
+    kind: compose
+    stack: files
+    image: paperless-ngx/paperless-ngx
+    version: 2.19.5
+    ports:
+      - { port: 8000, proto: tcp, auth: authelia, exposure: public, purpose: Web }
+    urls:
+      - { label: Documents, url: 'https://docs.home.example/' }
+    auth: authelia
+    calls:
+      - { target: postgres, via: postgres, port: 5432, purpose: Documents index }
+      - { target: imap.example.net, via: imaps, port: 993, purpose: Mail import }
+    health: { kuma: [kuma-5] }
+    logs: { dozzle: { host: docker-host, container: paperless } }
+    paths: { consume: /srv/documents/consume, media: /srv/documents/media }
+
+  - id: syncthing
+    name: Syncthing
+    summary: Keeps the family's folders the same on every laptop and on the server.
+    node: ct-files
+    kind: systemd
+    stack: files
+    version: v2.0.10
+    ports:
+      - { port: 8384, proto: tcp, auth: own, exposure: lan, purpose: Web UI }
+      - { port: 22000, proto: tcp, auth: key, exposure: lan, purpose: Sync }
+    auth: own
+    calls:
+      - { target: Syncthing relays, via: https, purpose: Discovery when away }
+
+  - id: postgres
+    name: PostgreSQL
+    summary: The shared database behind photos, paperwork, git and logins.
+    node: ct-db
+    kind: systemd
+    stack: files
+    version: '17.7'
+    ports:
+      - { port: 5432, proto: tcp, bind: 10.20.0.30, auth: own, exposure: lan, purpose: Database }
+    auth: own
+    backup: { how: pg_dumpall nightly, where: tank/backup/postgres }
+    secrets:
+      - { path: /etc/postgresql/17/main/pg_hba.conf, purpose: Allowed clients (no secret values) }
+
+  # AI and code.
+  - id: ollama
+    name: Ollama
+    summary: Runs language models on the graphics card, for the chat page and the bots.
+    node: vm-ai
+    kind: systemd
+    stack: ai-dev
+    version: 0.13.1
+    ports:
+      - { port: 11434, proto: tcp, auth: none, exposure: lan, purpose: Model API }
+    auth: none
+    calls:
+      - { target: Model registry, via: https, purpose: Model downloads }
+    health: { kuma: [kuma-13] }
+    paths: { models: /srv/models }
+
+  - id: open-webui
+    name: Open WebUI
+    summary: A private chat page for questions and drafts; nothing typed there leaves the house.
+    node: vm-ai
+    kind: container
+    stack: ai-dev
+    image: open-webui/open-webui
+    version: v0.6.36
+    ports:
+      - { port: 8080, proto: tcp, auth: authelia, exposure: public, purpose: Web }
+    urls:
+      - { label: Chat, url: 'https://chat.home.example/' }
+    auth: oidc
+    calls:
+      - { target: ollama, via: http, port: 11434, purpose: Chat completions }
+      - { target: authelia, via: oidc, purpose: Sign-in }
+
+  - id: forgejo
+    name: Forgejo
+    summary: The git forge for home projects, with issues and CI.
+    node: ct-dev
+    kind: container
+    stack: ai-dev
+    image: forgejo/forgejo
+    version: '13.0'
+    ports:
+      - { port: 3000, proto: tcp, auth: own, exposure: public, purpose: Web and API }
+      - { port: 2222, proto: tcp, auth: key, exposure: lan, purpose: Git over SSH }
+    urls:
+      - { label: Git, url: 'https://git.home.example/' }
+    auth: own
+    calls:
+      - { target: postgres, via: postgres, port: 5432, purpose: Repositories index }
+    health: { kuma: [kuma-7] }
+
+  - id: forgejo-runner
+    name: Forgejo runner
+    node: ct-dev
+    kind: container
+    stack: ai-dev
+    image: forgejo/runner
+    version: 11.3.1
+    auth: token
+    calls:
+      - { target: forgejo, via: http, port: 3000, purpose: Job queue }
+      - { target: Container registries, via: https, purpose: Build images }
+
+  - id: code-server
+    name: code-server
+    summary: The code editor in a browser tab, with the projects already checked out.
+    node: ct-dev
+    kind: container
+    stack: ai-dev
+    image: coder/code-server
+    version: 4.105.1
+    ports:
+      - { port: 8443, proto: tcp, auth: own, exposure: lan, purpose: Editor }
+    auth: own
+    calls:
+      - { target: forgejo, via: ssh, port: 2222, purpose: Git push }
+      - { target: ollama, via: http, port: 11434, purpose: Code completion }
+
+  # Chat bots.
+  - id: household-bot
+    name: Household bot
+    summary: Answers questions in the family chat and switches lights or heating on request.
+    node: vm-docker
+    kind: container
+    stack: bots
+    image: example/household-bot
+    version: 1.8.0
+    calls:
+      - { target: Telegram Bot API, via: https, purpose: Messages }
+      - { target: route-home, via: https, purpose: Home Assistant API }
+      - { target: ollama, via: http, port: 11434, purpose: Understands free-form questions }
+    logs: { dozzle: { host: docker-host, container: household-bot } }
+
+  - id: media-bot
+    name: Media bot
+    summary: Takes film and series requests in the chat and says when they are ready to watch.
+    node: vm-docker
+    kind: container
+    stack: bots
+    image: example/media-bot
+    version: 0.9.4
+    calls:
+      - { target: Telegram Bot API, via: https, purpose: Messages }
+      - { target: route-requests, via: https, purpose: Create requests }
+      - { target: jellyfin, via: http, port: 8096, purpose: Recently added }
+    logs: { dozzle: { host: docker-host, container: media-bot } }
+
+  - id: door-bot
+    name: Door bot
+    summary: Sends a snapshot to the family chat when someone rings the doorbell.
+    node: vm-docker
+    kind: container
+    stack: bots
+    image: example/door-bot
+    version: 2.1.0
+    calls:
+      - { target: Telegram Bot API, via: https, purpose: Snapshots }
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Doorbell events }
+      - { target: frigate, via: http, port: 5000, purpose: Snapshot image }
+    logs: { dozzle: { host: docker-host, container: door-bot } }
+
+  # Monitoring.
+  - id: uptime-kuma
+    name: Uptime Kuma
+    summary: Checks every minute that apps and machines answer, and alerts when one does not.
+    node: vm-docker
+    kind: container
+    stack: observe
+    image: louislam/uptime-kuma
+    version: 2.0.2
+    ports:
+      - { port: 3001, proto: tcp, auth: own, exposure: public, purpose: Status page and /metrics }
+    urls:
+      - { label: Status, url: 'https://status.home.example/' }
+    auth: own
+    calls:
+      - { target: Telegram Bot API, via: https, purpose: Alerts }
+      - { target: adguard, via: dns, purpose: DNS check, kind: observe }
+    logs: { dozzle: { host: docker-host, container: uptime-kuma } }
+
+  - id: dozzle
+    name: Dozzle
+    summary: Shows the live logs of the containers on both Docker hosts in a browser.
+    node: vm-docker
+    kind: container
+    stack: observe
+    image: amir20/dozzle
+    version: v8.14.5
+    ports:
+      - { port: 8080, proto: tcp, auth: none, exposure: internal, purpose: Log hub (read-only) }
+    auth: none
+    calls:
+      - { target: ct-media, via: dozzle-agent, port: 7007, purpose: Remote logs }
+    notes: Reads the local Docker socket read-only; a Dozzle agent on [[ct-media]] serves the media logs.
+
+  - id: prometheus
+    name: Prometheus
+    summary: Collects numbers like CPU, disk and request rates from the apps, every 30 seconds.
+    node: vm-docker
+    kind: container
+    stack: observe
+    image: prom/prometheus
+    version: v3.7.3
+    ports:
+      - { port: 9090, proto: tcp, auth: none, exposure: internal, purpose: API }
+    auth: none
+    calls:
+      - { target: traefik, via: http, port: 8080, purpose: Metrics, kind: observe }
+      - { target: home-assistant, via: http, port: 8123, purpose: Metrics, kind: observe }
+      - { target: proxmox-ui, via: https, port: 8006, purpose: Host metrics, kind: observe }
+
+  - id: grafana
+    name: Grafana
+    summary: Graphs of everything Prometheus collects, for spotting slow trouble.
+    node: vm-docker
+    kind: container
+    stack: observe
+    image: grafana/grafana
+    version: 12.3.0
+    ports:
+      - { port: 3000, proto: tcp, auth: authelia, exposure: public, purpose: Dashboards }
+    urls:
+      - { label: Grafana, url: 'https://grafana.home.example/' }
+    auth: authelia
+    calls:
+      - { target: prometheus, via: http, port: 9090, purpose: Queries }
+    logs: { dozzle: { host: docker-host, container: grafana } }
+
+  - id: homepage
+    name: Homepage
+    summary: Start page with a tile for every app and its status.
+    node: vm-docker
+    kind: container
+    stack: observe
+    image: gethomepage/homepage
+    version: v1.7.0
+    ports:
+      - { port: 3010, proto: tcp, auth: authelia, exposure: lan, purpose: Dashboard }
+    auth: authelia
+    calls:
+      - { target: jellyfin, via: http, purpose: Widget, kind: observe }
+      - { target: sonarr, via: http, purpose: Widget, kind: observe }
+      - { target: radarr, via: http, purpose: Widget, kind: observe }
+      - { target: home-assistant, via: http, purpose: Widget, kind: observe }
+      - { target: immich, via: http, purpose: Widget, kind: observe }
+      - { target: uptime-kuma, via: http, purpose: Widget, kind: observe }
+      - { target: adguard, via: http, purpose: Widget, kind: observe }
+    logs: { dozzle: { host: docker-host, container: homepage } }
+
+  - id: system-map
+    name: System Map
+    summary: 'This map: the documentation of the whole system, with live health and logs.'
+    node: vm-docker
+    kind: container
+    stack: observe
+    image: example/system-map
+    version: 1.4.0
+    ports:
+      - { port: 8080, proto: tcp, auth: authelia, exposure: public, purpose: Web }
+    urls:
+      - { label: Map, url: 'https://map.home.example/' }
+    auth: authelia
+    calls:
+      - { target: uptime-kuma, via: http, purpose: Health, kind: observe }
+      - { target: dozzle, via: http, purpose: Live logs, kind: observe }
+
+  - id: heimdall
+    name: Heimdall
+    summary: The old start page, replaced by Homepage.
+    node: vm-legacy
+    kind: container
+    stack: observe
+    status: retired
+    calls:
+      - { target: jellyfin, via: http, kind: observe }
+
+  # No stack.
+  - id: proxmox-ui
+    name: Proxmox web UI
+    summary: 'The admin console of the server: start, stop and back up every machine.'
+    node: pve
+    kind: native
+    ports:
+      - { port: 8006, proto: tcp, bind: 10.20.0.2, auth: own, exposure: lan, purpose: Web UI and API }
+    urls:
+      - { label: UI, url: 'https://10.20.0.2:8006/', internal: true }
+    auth: own
+    health: { kuma: [kuma-14] }
+
+  - id: samba
+    name: Samba share
+    node: ct-files
+    kind: systemd
+    version: 4.22.4
+    ports:
+      - { port: 445, proto: tcp, auth: own, exposure: lan, purpose: SMB }
+    auth: own
+    notes: Serves `/srv/files` read-only to the TV and read-write to the scanner's inbox folder.

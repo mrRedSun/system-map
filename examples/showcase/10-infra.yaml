@@ -1,0 +1,322 @@
+# yaml-language-server: $schema=../../schema/system-map.schema.json
+
+zones:
+  - id: zone-home-example
+    domain: home.example
+    provider: Cloudflare
+    plan: free
+    records:
+      - { name: home.example, type: A, value: 203.0.113.24, proxied: true }
+      - { name: '*.home.example', type: CNAME, value: home.example, proxied: true }
+      - { name: vpn.home.example, type: A, value: 203.0.113.24, proxied: false }
+      - { name: home.example, type: MX, value: mx.example.net }
+      - { name: home.example, type: TXT, value: 'v=spf1 include:example.net -all' }
+    settings:
+      ssl: full-strict
+      always_use_https: true
+      min_tls_version: '1.2'
+    rules:
+      - kind: waf
+        expression: (ip.geoip.country ne "NL" and http.host ne "status.home.example")
+        action: managed_challenge
+        note: Challenge traffic from abroad, except the public status page.
+      - kind: rate_limit
+        expression: (http.host eq "auth.home.example")
+        action: block
+        note: More than 30 login attempts a minute from one address are blocked for ten minutes.
+
+networks:
+  - id: lan
+    name: Home LAN
+    cidr: 10.20.0.0/24
+    gateway: 10.20.0.1
+    dns: [10.20.0.53]
+    dhcp: router, 10.20.0.100-10.20.0.199
+    notes: Servers have static addresses below .100.
+  - id: iot
+    name: IoT
+    cidr: 10.20.30.0/24
+    gateway: 10.20.30.1
+    vlan: 30
+    dns: [10.20.0.53]
+    dhcp: router, 10.20.30.100-10.20.30.199
+    notes: No internet. The router only lets these devices reach the home container.
+  - id: vpn-net
+    name: WireGuard
+    cidr: 10.20.10.0/24
+    gateway: 10.20.10.1
+    dhcp: false
+    notes: Peers get static addresses, one per phone or laptop.
+
+nodes:
+  - id: internet
+    kind: internet
+    name: Internet
+    summary: Everything outside the house.
+  - id: cdn
+    kind: cdn
+    name: Cloudflare
+    summary: Answers DNS for home.example and filters web traffic before it reaches the house.
+    description: DNS, proxy and WAF for home.example.
+  - id: router
+    kind: router
+    name: Edge router
+    summary: The internet router. Forwards web traffic to Traefik and runs the VPN.
+    os: OPNsense 26.1
+    ips: [10.20.0.1, 203.0.113.24]
+    network: lan
+    notes: |
+      Forwards **443/tcp** to [[vm-docker]] and **51820/udp** to [[wireguard]]. The [[iot]]
+      VLAN has a block-all rule to the internet.
+  - id: wg-tunnel
+    kind: vpn
+    name: WireGuard tunnel
+    summary: The encrypted tunnel that puts a phone on the home network from anywhere.
+    parent: router
+    network: vpn-net
+    ips: [10.20.10.1]
+  - id: pve
+    kind: host
+    name: Proxmox host
+    summary: The one physical server. Every machine below runs on it.
+    hostname: pve-01
+    os: Proxmox VE 9.1
+    ips: [10.20.0.2]
+    network: lan
+    hardware:
+      cpu: 12-core x86_64
+      ram: 96 GiB
+      disks:
+        - { device: /dev/nvme0n1, model: Example NVMe 2TB, size: 2 TB, role: system + guests }
+        - { device: /dev/sda, model: Example HDD 12TB, size: 12 TB, role: tank raidz1 }
+        - { device: /dev/sdb, model: Example HDD 12TB, size: 12 TB, role: tank raidz1 }
+        - { device: /dev/sdc, model: Example HDD 12TB, size: 12 TB, role: tank raidz1 }
+    firewall:
+      enabled: true
+      policy_in: DROP
+      policy_out: ACCEPT
+      file: /etc/pve/firewall/cluster.fw
+      rules:
+        - { action: ACCEPT, direction: in, source: 10.20.0.0/24, proto: tcp, port: 8006, comment: Web UI from LAN }
+        - { action: ACCEPT, direction: in, source: 10.20.10.0/24, proto: tcp, port: 8006, comment: Web UI over VPN }
+        - { action: ACCEPT, direction: in, source: 10.20.0.0/24, proto: tcp, port: 22, comment: SSH from LAN }
+    update:
+      command: apt update && apt full-upgrade
+      notes: Reboot only in the Sunday morning window.
+    paths:
+      vzdump: /tank/backup/dump
+    secrets:
+      - { path: /root/.config/restic/password, purpose: restic repository password }
+  - id: tank
+    kind: storage
+    name: tank (ZFS raidz1)
+    summary: The big disk pool. Holds media, photos, documents, files and the backups.
+    parent: pve
+    description: 3×12 TB raidz1, about 22 TB usable.
+  - id: offsite-store
+    kind: external
+    name: Offsite object store
+    summary: Rented storage in another city that keeps an encrypted copy of the backups.
+    description: S3-compatible bucket at an example provider, reached over HTTPS.
+
+  - id: vm-docker
+    kind: vm
+    name: docker-host
+    summary: 'The main Docker VM: the front door, logins, photos, paperwork, bots and monitoring.'
+    parent: pve
+    vmid: 101
+    os: Debian 13
+    hostname: docker-host
+    ips: [10.20.0.10]
+    network: lan
+    resources: { cores: 6, memory_mib: 16384, disk_gib: 96, disk_storage: local-zfs }
+    autostart: true
+    mounts:
+      - { source: tank/photos, target: /srv/photos, storage: tank, backup: true, purpose: Photo library }
+      - { source: tank/documents, target: /srv/documents, storage: tank, backup: true, purpose: Document archive }
+    backup: { included: true, job: nightly-guests }
+    firewall:
+      enabled: true
+      nic_flag: true
+      policy_in: DROP
+      rules:
+        - { action: ACCEPT, direction: in, proto: tcp, port: 443, comment: Traefik }
+        - { action: ACCEPT, direction: in, source: 10.20.0.0/24, proto: tcp, port: 22, comment: SSH }
+    update:
+      command: apt update && apt upgrade
+      source: Debian security
+    paths:
+      stacks: /opt/stacks
+    secrets:
+      - { path: /opt/stacks/authelia/secrets/, purpose: Authelia JWT and storage keys }
+      - { path: /opt/stacks/bots/.env, purpose: Telegram bot tokens }
+  - id: ct-dns
+    kind: lxc
+    name: dns
+    summary: Small container for DNS filtering.
+    parent: pve
+    vmid: 110
+    os: Alpine 3.22
+    hostname: dns
+    ips: [10.20.0.53]
+    network: lan
+    resources: { cores: 1, memory_mib: 512, disk_gib: 4 }
+    privileged: false
+    autostart: true
+    features: [nesting=0]
+    backup: { included: true, job: nightly-guests }
+  - id: ct-media
+    kind: lxc
+    name: media-host
+    summary: Container for the films-and-series apps, right next to the media share.
+    parent: pve
+    vmid: 120
+    os: Debian 13
+    hostname: media-host
+    ips: [10.20.0.20]
+    network: lan
+    resources: { cores: 6, memory_mib: 8192, disk_gib: 32 }
+    privileged: false
+    autostart: true
+    features: [nesting=1, keyctl=1]
+    devices:
+      - { source: /dev/dri/renderD128, target: /dev/dri/renderD128, purpose: Hardware transcoding }
+    mounts:
+      - { source: tank/media, target: /srv/media, storage: tank, backup: false, purpose: Media library and downloads }
+    backup: { included: true, job: nightly-guests, notes: The media itself is not backed up; it can be fetched again. }
+    paths:
+      stacks: /opt/stacks
+  - id: ct-files
+    kind: lxc
+    name: files
+    summary: Container for file sync and the Windows-style network share.
+    parent: pve
+    vmid: 125
+    os: Debian 13
+    hostname: files
+    ips: [10.20.0.25]
+    network: lan
+    resources: { cores: 2, memory_mib: 2048, disk_gib: 8 }
+    privileged: false
+    autostart: true
+    mounts:
+      - { source: tank/files, target: /srv/files, storage: tank, backup: true, purpose: Shared family files }
+    backup: { included: true, job: nightly-guests }
+  - id: ct-db
+    kind: lxc
+    name: db
+    summary: The shared PostgreSQL server for photos, paperwork, git and logins.
+    parent: pve
+    vmid: 130
+    os: Debian 13
+    hostname: db
+    ips: [10.20.0.30]
+    network: lan
+    resources: { cores: 4, memory_mib: 6144, disk_gib: 64, disk_storage: local-zfs }
+    privileged: false
+    autostart: true
+    backup: { included: true, job: nightly-guests, notes: Also dumped logically every night; see backup-db. }
+    firewall:
+      enabled: true
+      policy_in: DROP
+      rules:
+        - { action: ACCEPT, direction: in, source: 10.20.0.10, proto: tcp, port: 5432, comment: docker-host apps }
+        - { action: ACCEPT, direction: in, source: 10.20.0.60, proto: tcp, port: 5432, comment: Forgejo }
+        - { action: ACCEPT, direction: in, source: 10.20.0.0/24, proto: tcp, port: 22, comment: SSH }
+  - id: ct-home
+    kind: lxc
+    name: home
+    summary: Container for home automation and the cameras, with the Zigbee stick passed through.
+    parent: pve
+    vmid: 140
+    os: Debian 13
+    hostname: home
+    ips: [10.20.0.40, 10.20.30.40]
+    network: lan
+    resources: { cores: 4, memory_mib: 6144, disk_gib: 48 }
+    privileged: false
+    autostart: true
+    features: [nesting=1]
+    devices:
+      - { source: /dev/ttyUSB0, target: /dev/ttyUSB0, purpose: Zigbee coordinator }
+      - { source: /dev/apex_0, target: /dev/apex_0, purpose: Object detection accelerator }
+    mounts:
+      - { source: tank/recordings, target: /srv/recordings, storage: tank, backup: false, purpose: Camera recordings (14 days) }
+    backup: { included: true, job: nightly-guests }
+    firewall:
+      enabled: true
+      nic_flag: true
+      policy_in: DROP
+      rules:
+        - { action: ACCEPT, direction: in, source: 10.20.0.0/24, proto: tcp, port: 8123, comment: Home Assistant }
+        - { action: ACCEPT, direction: in, source: 10.20.0.0/24, proto: tcp, port: 1883, comment: MQTT from LAN }
+        - { action: ACCEPT, direction: in, source: 10.20.30.0/24, proto: tcp, port: 1883, comment: MQTT from IoT }
+  - id: vm-ai
+    kind: vm
+    name: ai
+    summary: VM with the graphics card, for the local AI models.
+    parent: pve
+    vmid: 150
+    os: Ubuntu 26.04
+    hostname: ai
+    ips: [10.20.0.50]
+    network: lan
+    resources: { cores: 8, memory_mib: 32768, disk_gib: 128, disk_storage: local-zfs }
+    autostart: true
+    devices:
+      - { source: '0000:01:00.0', target: GPU, purpose: Model inference (PCIe passthrough) }
+    mounts:
+      - { source: tank/models, target: /srv/models, storage: tank, backup: false, purpose: Model weights }
+    backup: { included: true, job: nightly-guests, notes: Models are excluded; they can be pulled again. }
+  - id: ct-dev
+    kind: lxc
+    name: dev
+    summary: Container for the git forge, the CI runner and the browser code editor.
+    parent: pve
+    vmid: 160
+    os: Debian 13
+    hostname: dev
+    ips: [10.20.0.60]
+    network: lan
+    resources: { cores: 4, memory_mib: 8192, disk_gib: 64 }
+    privileged: false
+    autostart: true
+    features: [nesting=1, keyctl=1]
+    backup: { included: true, job: nightly-guests }
+  - id: vm-legacy
+    kind: vm
+    name: legacy
+    parent: pve
+    vmid: 190
+    status: retired
+    os: Debian 11
+    ips: [10.20.0.90]
+    network: lan
+    resources: { cores: 2, memory_mib: 4096, disk_gib: 32 }
+    autostart: false
+    notes: Ran the old all-in-one setup until its apps moved to [[vm-docker]] and [[ct-media]].
+    backup: { included: false }
+
+  - id: cam-front
+    kind: device
+    name: Front door camera
+    summary: Watches the front door and the doorbell.
+    network: iot
+    ips: [10.20.30.11]
+  - id: cam-garage
+    kind: device
+    name: Garage camera
+    network: iot
+    ips: [10.20.30.12]
+  - id: cam-garden
+    kind: device
+    name: Garden camera
+    summary: Watches the garden and the back gate; switched off over winter.
+    network: iot
+    ips: [10.20.30.13]
+  - id: phone
+    kind: device
+    name: Owner phone
+    summary: Gets the alerts and doorbell snapshots, and reaches home over the VPN.
+    network: vpn-net
+    ips: [10.20.10.2]

@@ -99,12 +99,12 @@ describe('merge', () => {
   it('reports a missing version, unknown top-level keys, and non-list sections', () => {
     const model = build(file('a.yaml', 'nodes: {}\nextra: 1\n'));
     expect(model.problems).toEqual([
+      expect.objectContaining({ severity: 'error', code: 'schema', line: 1, path: 'nodes' }),
       expect.objectContaining({
         severity: 'error',
         code: 'schema',
-        message: 'Missing `version: 1`',
+        message: 'No file declares `version: 1`; add it to the file with `meta`',
       }),
-      expect.objectContaining({ severity: 'error', code: 'schema', line: 1, path: 'nodes' }),
       expect.objectContaining({ severity: 'warning', code: 'unknown-key', line: 2, path: 'extra' }),
     ]);
   });
@@ -112,8 +112,25 @@ describe('merge', () => {
   it('reports a top level that is not a mapping and warns on empty files', () => {
     const model = build(file('a.yaml', '- 1\n'), file('b.yaml', '# nothing\n'));
     expect(model.problems).toEqual([
-      expect.objectContaining({ code: 'schema', file: 'a.yaml', severity: 'error' }),
+      expect.objectContaining({ code: 'schema', file: 'a.yaml', severity: 'error', line: 1 }),
+      expect.objectContaining({ code: 'schema', file: 'a.yaml', path: 'version' }),
       expect.objectContaining({ code: 'file', file: 'b.yaml', severity: 'warning' }),
+    ]);
+  });
+
+  it('needs `version: 1` in only one file', () => {
+    const model = build(
+      file('00-meta.yaml', 'version: 1\nmeta: { title: T }\n'),
+      file('10-nodes.yaml', 'nodes:\n  - { id: pve, kind: host }\n'),
+    );
+    expect(model.problems).toEqual([]);
+    expect(model.nodes).toHaveLength(1);
+  });
+
+  it('rejects a version other than 1 in any file', () => {
+    const model = build(file('a.yaml', 'version: 1\n'), file('b.yaml', 'version: 2\n'));
+    expect(model.problems).toEqual([
+      expect.objectContaining({ code: 'schema', file: 'b.yaml', line: 1, path: 'version' }),
     ]);
   });
 });
@@ -370,6 +387,50 @@ describe('references', () => {
     expect(model.edges).toContainEqual(
       expect.objectContaining({ kind: 'backs-up', source: 'b', target: 'svc' }),
     );
+  });
+});
+
+describe('monitors on nodes', () => {
+  const nodes =
+    'version: 1\nnodes: [{ id: pve, kind: host }]\nservices: [{ id: svc, name: S, kind: native, node: pve }]\n';
+
+  it('derive a monitors edge to the node', () => {
+    const model = build(
+      file(
+        'a.yaml',
+        nodes +
+          'monitors:\n  - { id: kuma-1, kuma_id: 1, name: Ping, node: pve }\n  - { id: kuma-2, kuma_id: 2, name: Push }\n',
+      ),
+    );
+    expect(model.problems).toEqual([]);
+    expect(model.edges).toContainEqual(
+      expect.objectContaining({ kind: 'monitors', source: 'kuma-1', target: 'pve' }),
+    );
+  });
+
+  it('reject a monitor with both service and node', () => {
+    const model = build(
+      file(
+        'a.yaml',
+        nodes + 'monitors:\n  - { id: kuma-1, kuma_id: 1, name: Ping, node: pve, service: svc }\n',
+      ),
+    );
+    expect(model.monitors).toEqual([]);
+    expect(model.problems).toEqual([
+      expect.objectContaining({
+        code: 'schema',
+        line: 5,
+        path: 'monitors[0].node',
+        message: expect.stringContaining('either `service` or `node`'),
+      }),
+    ]);
+  });
+
+  it('require node to reference a node', () => {
+    const model = build(
+      file('a.yaml', nodes + 'monitors:\n  - { id: kuma-1, kuma_id: 1, name: Ping, node: svc }\n'),
+    );
+    expect(model.problems[0]?.message).toContain('must reference a node');
   });
 });
 

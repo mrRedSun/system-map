@@ -44,8 +44,8 @@ Dozzle hub ──► log proxy (allowlisted containers only) ──► /api/logs
 
 Read [docs/data.md](docs/data.md) before editing data files. In short:
 
-- Every `*.yaml` file in `DATA_DIR` is read in lexical order (dotfiles are skipped). Each file starts
-  with `version: 1`.
+- Every `*.yaml` file in `DATA_DIR` is read in lexical order (dotfiles are skipped). One file,
+  normally the one with `meta`, declares `version: 1`; the others may omit it.
 - Top-level lists concatenate across files. `meta` deep-merges, and a later file overriding a value
   produces a warning.
 - Ids are kebab-case and unique across all kinds. References are by id.
@@ -91,8 +91,8 @@ the file is re-read on every fetch, so rotation needs no restart. When Kuma is d
 missing, `/api/health` returns `{"error": "..."}` and the page keeps working.
 
 Monitors in the data link to Kuma by `kuma_id`. A service's health is the worst status of its
-monitors (`monitors[].service` or `services[].health.kuma`), and a guest or host shows the worst
-status of everything inside it.
+monitors (`monitors[].service` or `services[].health.kuma`). A node's health combines its own
+monitors (`monitors[].node`, e.g. a host ping) with the worst status of everything inside it.
 
 ### Dozzle
 
@@ -106,6 +106,17 @@ sends the last `tail` lines (at most 500) and follows live, until the client dis
 upstream request is then closed). Limits: only containers declared in the data, 8 concurrent streams,
 50 lines/s per stream (500 burst; skipped lines are reported), 8 KiB per line, and 30 s without data
 from Dozzle ends the stream. ANSI escapes are stripped and lines are shown as text.
+
+Before a line leaves the server, `src/server/redact.ts` masks likely secrets with `[redacted]`:
+
+- values of `apikey`, `api_key`, `key`, `token`, `access_token`, `password`, `passwd`, `secret` and
+  `auth`, in query strings, `name=value`, `name: value` and JSON (case-insensitive)
+- `Authorization:` header values and `Bearer` tokens
+- Telegram bot tokens
+- URL credentials (`https://user:pass@`)
+
+Redaction runs before truncation. It errs toward masking, so an ordinary value under one of those
+names is hidden too.
 
 ## Local development
 
@@ -169,7 +180,7 @@ else to back up.
 - Markdown renders without raw HTML. Links must be `http(s)`; the schema rejects other schemes.
 - Data files hold secret _locations_ only, never values.
 - Log streaming is limited to containers declared in the data, with caps on concurrent streams, line
-  rate, and line length.
+  rate, and line length. Secrets in log lines are redacted on the server.
 
 ## Ownership
 

@@ -20,7 +20,10 @@ export interface ModelIndex {
   /** Edges keyed by entity id, split by direction. */
   outgoing: Map<string, Edge[]>;
   incoming: Map<string, Edge[]>;
-  /** Monitor ids per service (from `monitors[].service` and `services[].health.kuma`). */
+  /**
+   * Monitor ids per service (`monitors[].service`, `services[].health.kuma`) and per node
+   * (`monitors[].node`, e.g. host pings).
+   */
   monitorsOf: Map<string, string[]>;
 }
 
@@ -38,7 +41,10 @@ export function indexModel(model: SystemModel): ModelIndex {
     push(incoming, e.target, e);
   }
   const monitorsOf = new Map<string, string[]>();
-  for (const m of model.monitors) if (m.service) pushUnique(monitorsOf, m.service, m.id);
+  for (const m of model.monitors) {
+    const target = m.service ?? m.node;
+    if (target) pushUnique(monitorsOf, target, m.id);
+  }
   for (const s of model.services)
     for (const m of s.health?.kuma ?? []) pushUnique(monitorsOf, s.id, m);
   return { byId, outgoing, incoming, monitorsOf };

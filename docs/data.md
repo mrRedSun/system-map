@@ -7,7 +7,8 @@ Rules for people and agents who edit the System Map data. The JSON Schema in
 
 - The server reads every `*.yaml` in `DATA_DIR` in lexical order, so a numeric prefix sets the
   order (`00-meta.yaml`, `10-infra.yaml`, ...). Dotfiles and other extensions are ignored.
-- Every file starts with `version: 1`.
+- One file, normally the one with `meta`, declares `version: 1`. Other files may omit it; if they
+  declare a version, it must be 1.
 - Top-level lists (`nodes`, `services`, ...) concatenate across files. `meta` deep-merges; when two
   files set the same key, the later file wins and the app shows a warning.
 - Limits: 200 files, 4 MiB per file, 16 MiB in total.
@@ -24,6 +25,7 @@ Rules for people and agents who edit the System Map data. The JSON Schema in
   | `nodes[].network`                                                                                          | a network      |
   | `services[].node`, `jobs[].node`                                                                           | a node         |
   | `services[].health.kuma[]`                                                                                 | a monitor      |
+  | `monitors[].node`                                                                                          | a node         |
   | `routes[].target`, `monitors[].service`                                                                    | a service      |
   | `policies[].scope`, `procedures[].applies_to`, `backups[].from`, `history[].refs`, `open_questions[].refs` | any entity     |
 
@@ -35,15 +37,15 @@ Rules for people and agents who edit the System Map data. The JSON Schema in
 
 The server computes these; do not write them:
 
-| Edge        | From             | To                          |
-| ----------- | ---------------- | --------------------------- |
-| `contains`  | `nodes[].parent` | node                        |
-| `runs-on`   | service          | `services[].node`           |
-| `calls`     | service          | `calls[].target` (ids only) |
-| `routes-to` | route            | `routes[].target`           |
-| `mounts`    | node             | `mounts[].storage`          |
-| `monitors`  | monitor          | `monitors[].service`        |
-| `backs-up`  | backup           | each `backups[].from`       |
+| Edge        | From             | To                              |
+| ----------- | ---------------- | ------------------------------- |
+| `contains`  | `nodes[].parent` | node                            |
+| `runs-on`   | service          | `services[].node`               |
+| `calls`     | service          | `calls[].target` (ids only)     |
+| `routes-to` | route            | `routes[].target`               |
+| `mounts`    | node             | `mounts[].storage`              |
+| `monitors`  | monitor          | `monitors[].service` or `.node` |
+| `backs-up`  | backup           | each `backups[].from`           |
 
 ## Problems
 
@@ -63,6 +65,8 @@ The app lists problems prominently, and `npm run validate` prints them.
 
 - `status`: `running` (default), `stopped`, `deliberately-stopped` (shown dimmed), `retired`
   (dimmed and hidden unless "show retired" is on).
+- A monitor points at a `service`, or at a `node` for host pings (host, guests, cameras), or at
+  neither (push monitors). Setting both is an error.
 - `monitors[].active` defaults to true.
 - Markdown fields (`notes`, `rule`, `body`, `summary`, `restore`, `rollback`, `meta.conventions`)
   render without raw HTML. Links must be `http(s)`.

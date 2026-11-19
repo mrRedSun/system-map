@@ -1,5 +1,4 @@
 # yaml-language-server: $schema=../schema/system-map.schema.json
-version: 1
 
 services:
   - id: proxmox-ui

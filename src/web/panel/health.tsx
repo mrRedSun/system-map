@@ -16,9 +16,13 @@ export function monitorsFor(
   if (ref?.section === 'monitors') return [id];
   if (ref?.section === 'services') return index.monitorsOf.get(id) ?? [];
   if (ref?.section === 'nodes') {
-    return model.services
-      .filter((s) => hostChain(index, s.id).includes(id))
-      .flatMap((s) => index.monitorsOf.get(s.id) ?? []);
+    // The node's own monitors (pings) first, then those of services running inside it.
+    return [
+      ...(index.monitorsOf.get(id) ?? []),
+      ...model.services
+        .filter((s) => hostChain(index, s.id).includes(id))
+        .flatMap((s) => index.monitorsOf.get(s.id) ?? []),
+    ];
   }
   return [];
 }

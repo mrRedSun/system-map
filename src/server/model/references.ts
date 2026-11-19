@@ -55,7 +55,10 @@ export function collectRefs(s: Sections): RefSite[] {
     v.health?.kuma?.forEach((m, i) => add(v.id, 'services', ['health', 'kuma', i], m, 'monitors'));
   }
   for (const r of s.routes) add(r.id, 'routes', ['target'], r.target, 'services');
-  for (const m of s.monitors) add(m.id, 'monitors', ['service'], m.service, 'services');
+  for (const m of s.monitors) {
+    add(m.id, 'monitors', ['service'], m.service, 'services');
+    add(m.id, 'monitors', ['node'], m.node, 'nodes');
+  }
   for (const j of s.jobs) add(j.id, 'jobs', ['node'], j.node, 'nodes');
   for (const b of s.backups) addAll(b.id, 'backups', 'from', b.from);
   for (const h of s.history) addAll(h.id, 'history', 'refs', h.refs);
@@ -170,7 +173,7 @@ export function deriveEdges(s: Sections): Edge[] {
     for (const c of v.calls ?? []) add('calls', v.id, c.target, c.purpose ?? c.via);
   }
   for (const r of s.routes) add('routes-to', r.id, r.target, r.host);
-  for (const m of s.monitors) add('monitors', m.id, m.service, m.name);
+  for (const m of s.monitors) add('monitors', m.id, m.service ?? m.node, m.name);
   for (const b of s.backups) for (const f of b.from ?? []) add('backs-up', b.id, f, b.what);
   return edges;
 }

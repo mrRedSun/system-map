@@ -3,6 +3,7 @@
   "type": "object",
   "properties": {
     "version": {
+      "description": "Required in at least one file (normally the one with meta)",
       "type": "number",
       "const": 1
     },
@@ -1216,6 +1217,11 @@
             "minLength": 1,
             "description": "Entity id"
           },
+          "node": {
+            "description": "Node id, for host ping monitors (instead of service)",
+            "type": "string",
+            "minLength": 1
+          },
           "group": {
             "type": "string"
           },
@@ -1234,7 +1240,13 @@
           "name",
           "kuma_id"
         ],
-        "additionalProperties": {}
+        "additionalProperties": {},
+        "not": {
+          "required": [
+            "service",
+            "node"
+          ]
+        }
       }
     },
     "jobs": {
@@ -1540,9 +1552,6 @@
       }
     }
   },
-  "required": [
-    "version"
-  ],
   "additionalProperties": {},
   "$id": "https://github.com/mrRedSun/system-map/blob/main/schema/system-map.schema.json",
   "title": "System Map data file (v1)"

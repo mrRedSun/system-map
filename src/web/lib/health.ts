@@ -66,8 +66,8 @@ function worst(a: HealthStatus | undefined, b: HealthStatus | undefined) {
 }
 
 /**
- * Health per entity id: monitors from Kuma, services from their monitors, and nodes from
- * everything running inside them (worst status wins). Inactive monitors are ignored.
+ * Health per entity id: monitors from Kuma; services from their monitors; nodes from their own
+ * monitors (pings) plus everything inside them. Worst status wins; inactive monitors are ignored.
  */
 export function entityHealth(
   model: SystemModel,
@@ -95,6 +95,10 @@ export function entityHealth(
   for (const s of model.services) {
     const status = out.get(s.id);
     if (status) bubble(s.node, status);
+  }
+  for (const m of model.monitors) {
+    const status = out.get(m.id);
+    if (m.node && status) bubble(m.node, status);
   }
   return out;
 }

@@ -11,6 +11,7 @@ import { streamSSE } from 'hono/streaming';
 import { SseParser, type SseMessage } from '../shared/sse.js';
 import type { LogSource } from './app.js';
 import { errorMessage, log } from './log.js';
+import { redact } from './redact.js';
 
 /** Every level Dozzle knows; without them the stream sends nothing. */
 const LEVELS = ['info', 'debug', 'warn', 'error', 'fatal', 'trace', 'unknown'];
@@ -104,7 +105,8 @@ export function lineText(ev: DozzleEvent, maxLength = 8192): string {
       .join('\n');
   } else if (typeof ev.m === 'string') text = fromHtml(ev.m);
   else text = JSON.stringify(ev.m ?? '');
-  text = text.replace(ANSI, '').replace(CONTROL, '');
+  // Redact before truncating, so a cut never leaves part of a secret unmasked.
+  text = redact(text.replace(ANSI, '').replace(CONTROL, ''));
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 

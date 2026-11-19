@@ -47,6 +47,8 @@ export function mergeFiles(files: readonly ParsedFile[]): MergeResult {
   // Which file last set each meta path, for conflict messages.
   const metaOwners = new Map<string, string>();
   let order = 0;
+  // `version: 1` must appear in at least one file; the others may omit it.
+  let versioned = false;
 
   for (const file of files) {
     const data = file.data;
@@ -63,17 +65,17 @@ export function mergeFiles(files: readonly ParsedFile[]): MergeResult {
       });
       continue;
     }
-    if (data.version !== 1) {
-      problem({
-        code: 'schema',
-        message:
-          data.version === undefined
-            ? 'Missing `version: 1`'
-            : `Unsupported version ${JSON.stringify(data.version)}; expected 1`,
-        file: file.name,
-        line: lineOf(file, data.version === undefined ? [] : ['version']),
-        path: 'version',
-      });
+    if (data.version !== undefined) {
+      if (data.version === 1) versioned = true;
+      else {
+        problem({
+          code: 'schema',
+          message: `Unsupported version ${JSON.stringify(data.version)}; expected 1`,
+          file: file.name,
+          line: lineOf(file, ['version']),
+          path: 'version',
+        });
+      }
     }
 
     for (const [key, value] of Object.entries(data)) {
@@ -144,6 +146,15 @@ export function mergeFiles(files: readonly ParsedFile[]): MergeResult {
         path: key,
       });
     }
+  }
+  if (!versioned && files.length > 0) {
+    problem({
+      code: 'schema',
+      message: 'No file declares `version: 1`; add it to the file with `meta`',
+      file: (result.metaFiles[0] ?? files[0])!.name,
+      line: 1,
+      path: 'version',
+    });
   }
   return result;
 }

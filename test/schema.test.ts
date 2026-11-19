@@ -30,7 +30,11 @@ describe('published JSON Schema', () => {
     addFormats.default(ajv);
     const check = ajv.compile(published);
     expect(check({ version: 1, nodes: [{ id: 'x', kind: 'spaceship' }] })).toBe(false);
-    expect(check({ nodes: [] })).toBe(false);
+    expect(check({ nodes: [] })).toBe(true);
+    expect(check({ version: 2 })).toBe(false);
+    expect(
+      check({ monitors: [{ id: 'kuma-1', kuma_id: 1, name: 'M', service: 'a', node: 'b' }] }),
+    ).toBe(false);
   });
 });
 

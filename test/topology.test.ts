@@ -59,6 +59,13 @@ describe('topology', () => {
     );
   });
 
+  it('draws monitor edges to nodes', () => {
+    const t = topo({ edgeKinds: { ...DEFAULT_EDGE_KINDS, monitors: true } });
+    expect(t.edges).toContainEqual(
+      expect.objectContaining({ kind: 'monitors', source: 'group:monitors', target: 'pve' }),
+    );
+  });
+
   it('hides edge kinds that are toggled off, with their groups', () => {
     const t = topo({ edgeKinds: { ...DEFAULT_EDGE_KINDS, 'routes-to': false, monitors: true } });
     expect(t.items.some((i) => i.id === 'group:routes')).toBe(false);
@@ -156,5 +163,18 @@ describe('entityHealth', () => {
     expect(h.get('ct-dns')).toBe('up');
     expect(h.get('pve')).toBe('down');
     expect(h.get('jellyfin')).toBeUndefined();
+  });
+
+  it("includes a node's own ping monitors", async () => {
+    const { entityHealth } = await import('../src/web/lib/health.js');
+    const h = entityHealth(examples, index, {
+      '5': { status: 'up', name: 'Jellyfin' },
+      '9': { status: 'down', name: 'Media ping' },
+      '8': { status: 'up', name: 'Proxmox host ping' },
+    });
+    expect(h.get('jellyfin')).toBe('up');
+    expect(h.get('ct-media')).toBe('down');
+    expect(h.get('pve')).toBe('down');
+    expect(index.monitorsOf.get('pve')).toEqual(['kuma-8']);
   });
 });

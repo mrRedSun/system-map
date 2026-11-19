@@ -291,10 +291,19 @@ export function buildSchemas(mode: SchemaMode) {
     type: str.optional(),
     target: str.optional(),
     service: ref.optional(),
+    node: ref
+      .optional()
+      .meta({ description: 'Node id, for host ping monitors (instead of service)' }),
     group: str.optional(),
     active: z.boolean().optional().meta({ description: 'Defaults to true' }),
     interval_s: z.int().min(1).optional(),
-  });
+  })
+    .refine((m) => m.service === undefined || m.node === undefined, {
+      message: 'set either `service` or `node`, not both',
+      path: ['node'],
+    })
+    // Same rule for editors (zod refinements do not reach the JSON Schema).
+    .meta({ not: { required: ['service', 'node'] } });
 
   const job = obj({
     ...base,
@@ -344,9 +353,12 @@ export function buildSchemas(mode: SchemaMode) {
     open_questions: openQuestion,
   };
 
-  /** Shape of one data file. Every file declares `version: 1`; all sections are optional. */
+  /** Shape of one data file. One file (normally the one with `meta`) declares `version: 1`. */
   const file = obj({
-    version: z.literal(1),
+    version: z
+      .literal(1)
+      .optional()
+      .meta({ description: 'Required in at least one file (normally the one with meta)' }),
     meta: meta.optional(),
     policies: z.array(policy).optional(),
     procedures: z.array(procedure).optional(),

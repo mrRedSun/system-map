@@ -23,7 +23,6 @@ export interface AppNodeData extends Record<string, unknown> {
   ports: PortInfo[];
   status?: string;
   dimmed: boolean;
-  vertical: boolean;
   selected: boolean;
   /** Something is highlighted and this item is not next to it. */
   faded: boolean;
@@ -64,21 +63,27 @@ export function stackColor(color: StackColor | undefined, mix: number): string {
   return mix >= 100 ? base : `color-mix(in oklch, ${base} ${mix}%, transparent)`;
 }
 
-function Handles({ vertical }: { vertical: boolean }) {
+const SIDES = [Position.Left, Position.Right, Position.Top, Position.Bottom];
+
+/**
+ * A source and a target handle on every side (`s-<side>`, `t-<side>`); each edge picks the
+ * sides that face each other (`edgeSides`).
+ */
+function Handles() {
   return (
     <>
-      <Handle
-        type="target"
-        position={vertical ? Position.Top : Position.Left}
-        className={HANDLE}
-        isConnectable={false}
-      />
-      <Handle
-        type="source"
-        position={vertical ? Position.Bottom : Position.Right}
-        className={HANDLE}
-        isConnectable={false}
-      />
+      {SIDES.flatMap((side) =>
+        (['source', 'target'] as const).map((type) => (
+          <Handle
+            key={`${type}-${side}`}
+            id={`${type[0]}-${side}`}
+            type={type}
+            position={side}
+            className={HANDLE}
+            isConnectable={false}
+          />
+        )),
+      )}
     </>
   );
 }
@@ -155,7 +160,7 @@ export function AppNode({ id, data }: NodeProps<AppGraphNode>) {
         stack && 'shadow-[3px_3px_0_-1px_var(--card),3px_3px_0_0_var(--border)]',
       )}
     >
-      <Handles vertical={data.vertical} />
+      <Handles />
       <span
         className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"
         style={stack ? { color: stackColor(data.color, 100) } : undefined}
@@ -168,9 +173,13 @@ export function AppNode({ id, data }: NodeProps<AppGraphNode>) {
           <HealthDot status={data.health} />
         </span>
         <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted-foreground">
-          {data.sublabel && <span className="shrink-0 font-mono">{data.sublabel}</span>}
+          {data.sublabel && (
+            <span className="min-w-0 truncate font-mono" title={data.sublabel}>
+              {data.sublabel}
+            </span>
+          )}
           {stopped && (
-            <span className="truncate rounded border border-dashed px-1 text-[10px]">
+            <span className="shrink-0 rounded border border-dashed px-1 text-[10px]">
               {stopped}
             </span>
           )}
@@ -178,7 +187,8 @@ export function AppNode({ id, data }: NodeProps<AppGraphNode>) {
       </span>
       {data.public.length > 0 && (
         <span
-          className="grid size-5 shrink-0 place-items-center rounded-full bg-[color-mix(in_oklch,var(--edge-routes)_18%,transparent)] text-[var(--edge-routes)]"
+          // Neutral: most apps are public, and a colored dot would read as a health status.
+          className="grid size-5 shrink-0 place-items-center rounded-full text-muted-foreground"
           aria-label={`Public: ${data.public.join(', ')}`}
         >
           <Globe className="size-3" />
@@ -213,7 +223,7 @@ export function SmallNode({ data }: NodeProps<AppGraphNode>) {
         data.faded && 'opacity-30',
       )}
     >
-      <Handles vertical={data.vertical} />
+      <Handles />
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{data.label}</span>
       <HealthDot status={data.health} />
@@ -237,7 +247,7 @@ export function StackNode({ id, data }: NodeProps<AppGraphNode>) {
         data.dimmed && 'border-dashed opacity-60',
       )}
     >
-      <Handles vertical={data.vertical} />
+      <Handles />
       <div className="flex h-8 items-center gap-1.5 pr-1 pl-3">
         <span
           className="size-2 shrink-0 rounded-full"

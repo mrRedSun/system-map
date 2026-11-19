@@ -5,7 +5,7 @@
 import type { ElkNode, LayoutOptions } from 'elkjs/lib/elk-api';
 import type { SystemModel } from '../../shared/model';
 import type { ModelIndex } from '../lib/model-index';
-import type { AppsGraph } from './apps';
+import type { AppItem, AppsGraph } from './apps';
 import type { Topology } from './topology';
 
 export const NODE_WIDTH = 236;
@@ -160,6 +160,37 @@ export const APP_SIZE = {
   ingress: { width: 168, height: 30 },
 } as const;
 export const STACK_HEADER = 32;
+export const LAYER_GAP = 44;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * Card size, wide enough for the name where possible: real names are often long
+ * ("Immich machine learning"), and a truncated name is the main thing lost on a card.
+ * Text widths are estimates (13 px medium ~7.3 px per character, 12 px ~6.6, 11 px mono ~6.7).
+ */
+export function cardSize(item: Pick<AppItem, 'kind' | 'label' | 'host' | 'public' | 'dimmed'>) {
+  const base = APP_SIZE[item.kind];
+  if (item.kind === 'app' || item.kind === 'stack') {
+    // Padding, icon, gaps, health dot, public badge (or the stack's expand toggle).
+    const chrome = 96 + (item.public.length > 0 || item.kind === 'stack' ? 0 : -20);
+    // The second line also holds the "deliberately stopped" / "retired" badge.
+    const second = (item.host?.length ?? 0) * 6.7 + (item.dimmed ? 110 : 0);
+    const text = Math.max(item.label.length * 7.3, second);
+    return { width: Math.round(clamp(chrome + text, base.width, 300)), height: base.height };
+  }
+  // Icon, padding, and for devices the kind chip.
+  const chrome = 40 + (item.kind === 'device' ? 44 : 0);
+  return {
+    width: Math.round(clamp(chrome + item.label.length * 6.6, base.width, 300)),
+    height: base.height,
+  };
+}
+
+/** Narrowest stack box that shows its whole title (12 px semibold caps, wide tracking). */
+export function stackMinWidth(label: string): number {
+  return Math.round(84 + label.length * 8.4);
+}
 
 /**
  * Each stack is laid out on its own, layered in the reading direction, so callers sit before
@@ -172,14 +203,14 @@ export function toElkAppsGraph(
   graph: AppsGraph,
   direction: Direction = 'RIGHT',
   aspectRatio = 1.6,
-  /** Room between layers for edge labels (focus mode, where few apps are shown). */
-  spacious = false,
+  /** Room between layers; focus mode widens it so edge labels fit. */
+  layerGap = LAYER_GAP,
 ): ElkNode {
   const layered: LayoutOptions = {
     ...BASE,
     'elk.direction': direction,
     'elk.spacing.nodeNode': '10',
-    'elk.layered.spacing.nodeNodeBetweenLayers': spacious ? '150' : '44',
+    'elk.layered.spacing.nodeNodeBetweenLayers': String(layerGap),
     'elk.spacing.componentComponent': '16',
     'elk.aspectRatio': String(aspectRatio),
   };
@@ -202,11 +233,13 @@ export function toElkAppsGraph(
           layoutOptions: {
             ...layered,
             'elk.padding': `[top=${STACK_HEADER + 4},left=10,bottom=10,right=10]`,
+            'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+            'elk.nodeSize.minimum': `(${stackMinWidth(item.label)}.0, 0.0)`,
           },
           children: [],
           edges: [],
         }
-      : { id: item.id, ...APP_SIZE[item.kind] };
+      : { id: item.id, ...cardSize(item) };
     const parent = item.parent ?? '__root';
     parentOf.set(item.id, parent);
     byId.set(item.id, node);
@@ -271,19 +304,61 @@ export function packBoxes(
     }
     return { positions, width, height: rowY + rowHeight };
   };
+  /**
+   * Skyline packing: each box, in order, goes to the highest free spot that fits (leftmost on
+   * ties). Denser than rows when box heights differ a lot, at some cost to reading order.
+   */
+  const skyline = (limit: number) => {
+    const positions = new Map<string, { x: number; y: number }>();
+    // Ground line: segments [x, x + w) at height y, left to right, covering [0, limit).
+    let ground = [{ x: 0, w: Math.max(limit, widest), y: 0 }];
+    let width = 0;
+    let height = 0;
+    for (const b of sizes) {
+      let best: { x: number; y: number } | undefined;
+      for (const seg of ground) {
+        const x = seg.x;
+        if (x + b.width > Math.max(limit, widest)) break;
+        const y = Math.max(
+          ...ground.filter((g) => g.x < x + b.width && g.x + g.w > x).map((g) => g.y),
+        );
+        if (!best || y < best.y) best = { x, y };
+      }
+      const { x, y } = best ?? { x: 0, y: height };
+      positions.set(b.id, { x, y });
+      width = Math.max(width, x + b.width);
+      height = Math.max(height, y + b.height);
+      const top = y + b.height + gap;
+      const end = x + b.width + gap;
+      const next: typeof ground = [];
+      for (const g of ground) {
+        if (g.x < x) next.push({ ...g, w: Math.min(g.w, x - g.x) });
+        if (g.x + g.w > end)
+          next.push({ x: Math.max(g.x, end), w: g.x + g.w - Math.max(g.x, end), y: g.y });
+      }
+      next.push({ x, w: end - x, y: top });
+      ground = next.sort((a, b2) => a.x - b2.x);
+    }
+    return { positions, width, height };
+  };
+
   const total = sizes.reduce((sum, b) => sum + b.width + gap, 0);
   const widest = Math.max(0, ...sizes.map((b) => b.width));
   if (oneColumn) return pack(0);
   let best = pack(total);
   let bestScale = 0;
-  // Each distinct row break is reached by some limit between the widest box and everything.
-  for (let limit = widest; limit <= total; limit += Math.max(gap, (total - widest) / 200)) {
-    const p = pack(limit);
-    const scale = Math.min(aspectRatio / p.width, 1 / p.height);
+  const consider = (p: typeof best, bonus: number) => {
+    const scale = Math.min(aspectRatio / p.width, 1 / p.height) * bonus;
     if (scale > bestScale) {
       best = p;
       bestScale = scale;
     }
+  };
+  // Each distinct row break is reached by some limit between the widest box and everything.
+  // Rows keep the reading order, so the skyline must be clearly (5%) better to win.
+  for (let limit = widest; limit <= total; limit += Math.max(gap, (total - widest) / 200)) {
+    consider(pack(limit), 1.05);
+    consider(skyline(limit), 1);
   }
   return best;
 }
@@ -294,11 +369,11 @@ export async function layoutApps(
   graph: AppsGraph,
   direction: Direction = 'RIGHT',
   aspectRatio = 1.6,
-  spacious = false,
+  layerGap = LAYER_GAP,
 ): Promise<Map<string, Box>> {
   const result = await (
     await elk()
-  ).layout(toElkAppsGraph(graph, direction, aspectRatio, spacious));
+  ).layout(toElkAppsGraph(graph, direction, aspectRatio, layerGap));
   // Stacks: ELK lays out the inside of each box; the boxes themselves are packed here.
   if (graph.items.some((i) => i.kind === 'stack')) {
     const top = result.children ?? [];

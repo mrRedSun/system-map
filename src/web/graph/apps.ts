@@ -12,8 +12,6 @@ export type StackColor = (typeof STACK_COLORS)[number];
 
 /** Group for apps without a (known) stack. Colons never occur in entity ids. */
 export const OTHER_STACK = 'group:other';
-/** Group for devices and externals called from more than one stack. */
-export const OUTSIDE = 'group:outside';
 
 export type AppItemKind = 'app' | 'stack' | 'device' | 'external' | 'ingress';
 
@@ -23,11 +21,11 @@ export interface AppItem {
   kind: AppItemKind;
   label: string;
   /**
-   * Expanded group that holds this item: the app's stack; for a device or external, the one
-   * stack that calls it, or Outside when several do.
+   * Expanded group that holds this item: the app's stack; for a device or external, the stack
+   * that calls it most (ties: the earlier stack).
    */
   parent?: string;
-  /** Groups: number of apps inside (Outside: number of items). */
+  /** Groups: number of apps inside. */
   childCount: number;
   /** Stacks: drawn as a group box with its apps inside. */
   expanded: boolean;
@@ -104,9 +102,14 @@ export function stackGroupOf(model: SystemModel, serviceId: string): string | un
   return service.stack && known.has(service.stack) ? service.stack : OTHER_STACK;
 }
 
-/** Edge label: purposes, call count, and the public hostname a call goes through. */
+/** Longest purpose shown on the canvas; the detail panel has the full text. */
+const LABEL_MAX = 36;
+const clip = (s: string) =>
+  s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX - 1).replace(/[\s,.;:-]+$/, '')}…` : s;
+
+/** Edge label: purposes (or protocol, or port), call count, and the route hostname. */
 export function edgeLabel(e: AppEdge): string {
-  const shown = e.labels.slice(0, 2).join(', ');
+  const shown = e.labels.slice(0, 2).map(clip).join(', ');
   const more = e.labels.length > 2 ? ` +${e.labels.length - 2}` : '';
   const count = e.count > 1 ? ` ×${e.count}` : '';
   const via = e.via.length > 0 ? `via ${e.via.join(', ')}` : '';
@@ -188,7 +191,7 @@ export function buildApps(model: SystemModel, index: ModelIndex, options: AppsOp
           kind: c.kind ?? 'use',
           from: s.id,
           to: r.to,
-          label: c.purpose ?? c.via,
+          label: c.purpose ?? c.via ?? (c.port !== undefined ? `:${c.port}` : undefined),
           via: r.via,
         });
     }
@@ -207,17 +210,26 @@ export function buildApps(model: SystemModel, index: ModelIndex, options: AppsOp
 
   // Groups. An extra item called from one stack only sits in that stack; shared ones go Outside.
   const groupOfService = new Map(services.map((s) => [s.id, grouped ? groupOf(s) : '']));
-  const callerGroups = new Map<string, Set<string>>();
-  for (const c of calls) {
-    if (!extras.has(c.to)) continue;
-    const set = callerGroups.get(c.to) ?? new Set<string>();
-    set.add(groupOfService.get(c.from)!);
-    callerGroups.set(c.to, set);
-  }
+  // A device or external sits in the stack that uses it most, so most of its edges stay short
+  // (a separate box for shared ones costs a row and draws lines across the whole map).
+  const groupRank = new Map([
+    ...stacks.map((st, i) => [st.id, i] as const),
+    [OTHER_STACK, stacks.length],
+  ]);
+  const uses = new Map<string, Map<string, number>>();
+  const countUse = (extra: string, service: string) => {
+    const counts = uses.get(extra) ?? new Map<string, number>();
+    const g = groupOfService.get(service)!;
+    counts.set(g, (counts.get(g) ?? 0) + 1);
+    uses.set(extra, counts);
+  };
+  for (const c of calls) if (extras.has(c.to)) countUse(c.to, c.from);
+  for (const c of ingressEdges) if (extras.has(c.from)) countUse(c.from, c.to);
   const groupOfExtra = (id: string) => {
     if (!grouped) return '';
-    const set = callerGroups.get(id);
-    return set?.size === 1 ? [...set][0]! : OUTSIDE;
+    const counts = [...(uses.get(id) ?? new Map<string, number>())];
+    counts.sort((a, b) => b[1] - a[1] || groupRank.get(a[0])! - groupRank.get(b[0])!);
+    return counts[0]?.[0] ?? OTHER_STACK;
   };
 
   const apps = new Map<string, Service[]>();
@@ -258,19 +270,17 @@ export function buildApps(model: SystemModel, index: ModelIndex, options: AppsOp
     const groups: { id: string; label: string; color?: StackColor; entity?: string }[] = [
       ...stacks.map((s) => ({ id: s.id, label: s.name ?? s.id, color: s.color, entity: s.id })),
       { id: OTHER_STACK, label: 'Other', color: 'gray' },
-      { id: OUTSIDE, label: 'Outside', color: 'gray' },
     ];
     let palette = 0;
     for (const g of groups) {
       const list = apps.get(g.id) ?? [];
-      const outside = extraMembers.get(g.id) ?? [];
-      if (list.length === 0 && outside.length === 0) continue;
+      if (list.length === 0 && !extraMembers.has(g.id)) continue;
       const expanded = !options.collapsed.has(g.id);
       items.push({
         id: g.id,
         kind: 'stack',
         label: g.label,
-        childCount: g.id === OUTSIDE ? outside.length : list.length,
+        childCount: list.length,
         expanded,
         dimmed: list.length > 0 && list.every((s) => isDimmed(s)),
         entity: g.entity,

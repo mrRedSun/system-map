@@ -49,7 +49,7 @@ the URL (`#/graph/apps`, `#/graph/infra`, `#/graph/apps/n/<id>`).
   from caller to callee. Each stack is laid out left to right (callers first); the boxes are packed
   to fit the screen. Calls to a route land on the route's target (the hostname is noted on the
   edge), calls to nodes show small device cards, and free-text targets show dashed external cards.
-  Devices and externals sit in the one stack that calls them, or in **Outside** when several do.
+  Devices and externals sit in the stack that calls them most.
   `kind: observe` calls (dashboards, monitors) are drawn faint and do not affect the layout. A
   globe marks apps with a public route; hover a card for its ports and hostnames, hover an edge
   for its purpose. Selecting an app highlights its neighbours; **Focus** (`f`) hides the rest.

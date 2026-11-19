@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=../schema/system-map.schema.json
+version: 1
+
+jobs:
+  - id: job-vzdump
+    node: pve
+    schedule: daily 02:30
+    command: vzdump --all --mode snapshot --storage tank-backup
+    source: Datacenter → Backup → nightly-guests
+    purpose: Snapshot backups of every guest marked for backup.
+    notifies: email on failure
+  - id: job-restic
+    node: pve
+    schedule: daily 04:00
+    command: /usr/local/bin/offsite-backup
+    source: /etc/systemd/system/offsite-backup.timer
+    purpose: Push the vzdump directory to the offsite restic repository.
+    notifies: Uptime Kuma push monitor kuma-7
+  - id: job-docker-prune
+    node: vm-docker
+    schedule: weekly
+    command: docker system prune -af --filter until=168h
+    notifies: false
+
+backups:
+  - id: backup-guests
+    what: Guest snapshots (vzdump)
+    from: [vm-docker, ct-dns, ct-media]
+    to: tank/backup/dump
+    schedule: daily 02:30
+    retention: keep-daily=7, keep-weekly=4
+    offsite: false
+    encrypted: false
+    restore: |
+      `qmrestore` / `pct restore` from `/tank/backup/dump`, then start the guest and check monitors.
+  - id: backup-offsite
+    what: Offsite copy of guest snapshots and photos
+    from: [backup-guests, photos]
+    to: restic repository at an offsite object store
+    schedule: daily 04:00
+    retention: keep-daily=14, keep-monthly=12
+    offsite: true
+    encrypted: true
+    restore: |
+      ```sh
+      restic -r "$REPO" restore latest --target /tank/restore
+      ```
+
+history:
+  - id: h-2026-11-01-authelia
+    date: 2026-11-01
+    title: Upgrade Authelia to 4.39.13
+    summary: Routine upgrade; no config changes needed.
+    refs: [authelia]
+    rollback: Pin `authelia/authelia:4.39.12` again and `docker compose up -d`.
+  - id: h-2026-10-12-sandbox
+    date: 2026-10-12
+    title: Stop the sandbox container
+    summary: Not in use; stopped and excluded from backups to save space.
+    refs: [ct-sandbox, backup-guests]
+  - id: h-2026-09-20-share-worker
+    date: 2026-09-20
+    title: Add the photo share worker
+    summary: |
+      Public share links now go through a Cloudflare worker, so the photos app itself
+      stays behind its own login. See [the worker docs](https://developers.cloudflare.com/workers/).
+    refs: [route-photos-share, zone-example-net, photos]
+
+open_questions:
+  - id: q-media-backup
+    question: Should the media library get an offsite backup after all?
+    refs: [ct-media, tank]
+  - id: q-kuma-push
+    question: Does the offsite job ping kuma-7 even when restic exits non-zero?
+    refs: [job-restic, kuma-7]

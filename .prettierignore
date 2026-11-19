@@ -1,0 +1,7 @@
+dist/
+node_modules/
+package-lock.json
+schema/system-map.schema.json
+src/web/components/ui/
+examples/
+src/web/styles/shadcn-tailwind.css

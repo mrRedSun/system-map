@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../schema/system-map.schema.json
+# Fictional example data for development and tests. Not a real system.
+version: 1
+
+meta:
+  title: Example homelab
+  owner: Example Owner
+  domain: example.net
+  timezone: Europe/Berlin
+  updated: 2026-11-01
+
+policies:
+  - id: policy-no-public-admin
+    title: No public admin UIs
+    rule: |
+      Admin interfaces are **never** exposed publicly without Authelia in front.
+      Use the LAN or the VPN instead.
+    why: A leaked admin UI is a full compromise of the guest.
+    since: 2025-03-14
+    scope: [traefik, authelia, proxmox-ui]
+  - id: policy-pin-images
+    title: Pin container images
+    rule: Every container image is pinned to a version tag or digest; `latest` is not allowed.
+    why: Reproducible rebuilds and deliberate upgrades.
+    since: 2025-06-02
+    scope: [vm-docker]
+
+procedures:
+  - id: proc-update-containers
+    title: Update a compose stack
+    applies_to: [vm-docker]
+    body: |
+      1. Read the release notes of the new version.
+      2. Bump the pinned tag in `/opt/stacks/<stack>/compose.yaml`.
+      3. Run `docker compose pull && docker compose up -d`.
+      4. Check the Uptime Kuma monitor and the logs in this map.
+      5. Add a `history` entry with the rollback command.
+  - id: proc-add-route
+    title: Add a public route
+    applies_to: [traefik, cloudflare]
+    body: |
+      - Add a Traefik router with the `authelia@file` middleware unless the app has its own auth.
+      - Add the DNS record in Cloudflare (proxied).
+      - Add a `routes` entry and an Uptime Kuma monitor here.

@@ -107,7 +107,8 @@ export function buildTree(model: SystemModel, index: ModelIndex, showRetired: bo
         break;
       }
       if (seen.has(cur)) {
-        parentOf.delete(id);
+        // Only a node on the cycle loses its parent; nodes hanging below it keep theirs.
+        if (cur === id) parentOf.delete(id);
         break;
       }
       seen.add(cur);

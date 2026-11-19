@@ -98,6 +98,17 @@ describe('topology', () => {
     expect(shown.edges.map((e) => e.id)).toEqual(['calls:app>legacy']);
   });
 
+  it('breaks only the cycle, not nodes hanging below it', () => {
+    const model = buildModel([
+      {
+        name: 'a.yaml',
+        text: 'version: 1\nnodes:\n  - { id: a, kind: vm, parent: b }\n  - { id: b, kind: vm, parent: c }\n  - { id: c, kind: vm, parent: b }\n',
+      },
+    ]).model;
+    const t = topo({ expanded: new Set(['a', 'b', 'c']) }, model);
+    expect(t.items.find((i) => i.id === 'a')?.parent).toBe('b');
+  });
+
   it('survives parent cycles', () => {
     const model = buildModel([
       {

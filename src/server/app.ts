@@ -89,6 +89,11 @@ export function createApp(deps: AppDeps): Hono {
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
       return c.text('Method Not Allowed', 405, { Allow: 'GET, HEAD' });
     }
+    // Hono answers HEAD by running the GET handler and dropping the body, which would leave
+    // stream slots and upstream connections open. Streams are GET only.
+    if (c.req.method === 'HEAD' && /^\/api\/(events|logs)(\/|$)/.test(c.req.path)) {
+      return c.text('Method Not Allowed', 405, { Allow: 'GET' });
+    }
     await next();
     if (!c.res.headers.has('Content-Security-Policy')) c.header('Content-Security-Policy', CSP);
     c.header('X-Content-Type-Options', 'nosniff');

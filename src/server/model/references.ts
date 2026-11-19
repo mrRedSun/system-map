@@ -49,6 +49,7 @@ export function collectRefs(s: Sections): RefSite[] {
   }
   for (const v of s.services) {
     add(v.id, 'services', ['node'], v.node, 'nodes');
+    add(v.id, 'services', ['stack'], v.stack, 'stacks');
     v.calls?.forEach((c, i) =>
       add(v.id, 'services', ['calls', i, 'target'], c.target, undefined, true),
     );

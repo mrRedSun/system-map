@@ -1,5 +1,14 @@
 # yaml-language-server: $schema=../schema/system-map.schema.json
 
+# Stacks group apps in the Apps graph. Services without `stack` land in "Other".
+stacks:
+  - { id: edge, name: Edge and access, color: blue, order: 1 }
+  - { id: media, name: Media, color: violet, order: 2 }
+  - { id: home, name: Home, color: green, order: 3 }
+  - { id: apps, name: Apps, color: teal, order: 4 }
+  - { id: bots, name: Bots, color: pink, order: 5 }
+  - { id: observability, name: Observability, color: amber, order: 6 }
+
 services:
   - id: proxmox-ui
     name: Proxmox web UI
@@ -16,6 +25,7 @@ services:
     name: Traefik
     node: vm-docker
     kind: container
+    stack: edge
     image: traefik
     version: v3.6.2
     pin: traefik:v3.6.2
@@ -39,6 +49,7 @@ services:
     name: Authelia
     node: vm-docker
     kind: container
+    stack: edge
     image: authelia/authelia
     version: 4.39.13
     pin: authelia/authelia:4.39.13
@@ -55,6 +66,7 @@ services:
     name: Wiki
     node: vm-docker
     kind: compose
+    stack: apps
     image: example/wiki
     version: 2.4.1
     ports:
@@ -72,6 +84,7 @@ services:
     name: Wiki database
     node: vm-docker
     kind: container
+    stack: apps
     image: postgres
     version: '17.6'
     ports:
@@ -83,6 +96,7 @@ services:
     name: Photos
     node: vm-docker
     kind: compose
+    stack: apps
     image: example/photos
     version: 1.140.0
     ports:
@@ -97,6 +111,7 @@ services:
     name: Uptime Kuma
     node: vm-docker
     kind: container
+    stack: observability
     image: louislam/uptime-kuma
     version: 2.0.2
     ports:
@@ -104,12 +119,14 @@ services:
     auth: authelia
     calls:
       - { target: Telegram Bot API, via: https, purpose: Alerts }
+      - { target: adguard, via: dns, purpose: DNS check, kind: observe }
     logs: { dozzle: { host: docker, container: uptime-kuma } }
 
   - id: dozzle
     name: Dozzle
     node: vm-docker
     kind: container
+    stack: observability
     image: amir20/dozzle
     version: v11.4.2
     ports:
@@ -120,6 +137,7 @@ services:
     name: AdGuard Home
     node: ct-dns
     kind: native
+    stack: edge
     version: v0.107.70
     ports:
       - { port: 53, proto: udp, auth: none, exposure: lan, purpose: DNS }
@@ -134,6 +152,7 @@ services:
     name: Jellyfin
     node: ct-media
     kind: systemd
+    stack: media
     version: 10.11.2
     ports:
       - { port: 8096, proto: tcp, auth: own, exposure: lan, purpose: Web and clients }
@@ -145,6 +164,7 @@ services:
     name: Batch transcoder
     node: ct-media
     kind: timer
+    stack: media
     status: deliberately-stopped
     schedule: Sun 03:00
     notes: Disabled until the new hardware encoder settings are tested.
@@ -153,6 +173,193 @@ services:
     name: WireGuard
     node: router
     kind: native
+    stack: edge
     ports:
       - { port: 51820, proto: udp, auth: key, exposure: public, purpose: VPN }
     auth: key
+
+  # Media: requests → Sonarr/Radarr → Prowlarr/qBittorrent → the internet.
+  - id: requests
+    name: Requests
+    node: ct-media
+    kind: container
+    stack: media
+    ports:
+      - { port: 5055, proto: tcp, auth: own, exposure: public, purpose: Web }
+    auth: own
+    calls:
+      - { target: sonarr, via: http, port: 8989, purpose: Add series }
+      - { target: radarr, via: http, port: 7878, purpose: Add movies }
+      - { target: jellyfin, via: http, port: 8096, purpose: Sign-in and availability }
+      - { target: TMDB API, via: https, purpose: Metadata }
+
+  - id: bazarr
+    name: Bazarr
+    node: ct-media
+    kind: container
+    stack: media
+    ports:
+      - { port: 6767, proto: tcp, auth: own, exposure: lan, purpose: Web }
+    auth: own
+    calls:
+      - { target: sonarr, via: http, port: 8989, purpose: Episode list }
+      - { target: radarr, via: http, port: 7878, purpose: Movie list }
+      - { target: OpenSubtitles API, via: https, purpose: Subtitles }
+
+  - id: sonarr
+    name: Sonarr
+    node: ct-media
+    kind: container
+    stack: media
+    ports:
+      - { port: 8989, proto: tcp, auth: own, exposure: lan, purpose: Web and API }
+    auth: own
+    calls:
+      - { target: prowlarr, via: http, port: 9696, purpose: Indexer search }
+      - { target: qbittorrent, via: http, port: 8081, purpose: Downloads }
+      - { target: jellyfin, via: http, port: 8096, purpose: Library refresh }
+      - { target: TVDB API, via: https, purpose: Metadata }
+    health: { kuma: [kuma-10] }
+
+  - id: radarr
+    name: Radarr
+    node: ct-media
+    kind: container
+    stack: media
+    ports:
+      - { port: 7878, proto: tcp, auth: own, exposure: lan, purpose: Web and API }
+    auth: own
+    calls:
+      - { target: prowlarr, via: http, port: 9696, purpose: Indexer search }
+      - { target: qbittorrent, via: http, port: 8081, purpose: Downloads }
+      - { target: jellyfin, via: http, port: 8096, purpose: Library refresh }
+      - { target: tmdb api, via: https, purpose: Metadata }
+
+  - id: prowlarr
+    name: Prowlarr
+    node: ct-media
+    kind: container
+    stack: media
+    ports:
+      - { port: 9696, proto: tcp, auth: own, exposure: lan, purpose: Web and API }
+    auth: own
+    calls:
+      - { target: indexers (internet), via: https, purpose: Search }
+
+  - id: qbittorrent
+    name: qBittorrent
+    node: ct-media
+    kind: container
+    stack: media
+    ports:
+      - { port: 8081, proto: tcp, auth: own, exposure: lan, purpose: Web UI and API }
+      - { port: 51413, proto: tcp, auth: none, exposure: public, purpose: Peers }
+    auth: own
+    calls:
+      - { target: BitTorrent peers, via: bittorrent }
+
+  # Home automation.
+  - id: home-assistant
+    name: Home Assistant
+    node: ct-home
+    kind: container
+    stack: home
+    ports:
+      - { port: 8123, proto: tcp, auth: own, exposure: public, purpose: Web and app }
+    auth: own
+    calls:
+      - { target: frigate, via: http, port: 5000, purpose: Events and clips }
+      - { target: frigate, via: rtsp, port: 8554, purpose: Live camera streams }
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Device state }
+      - { target: phone, via: https, purpose: Push notifications }
+      - { target: Telegram Bot API (long polling), via: https, purpose: Notifications }
+    health: { kuma: [kuma-11] }
+    logs: { dozzle: { host: home, container: homeassistant } }
+
+  - id: frigate
+    name: Frigate
+    node: ct-home
+    kind: container
+    stack: home
+    ports:
+      - { port: 5000, proto: tcp, auth: none, exposure: lan, purpose: Web and API }
+      - { port: 8554, proto: tcp, auth: none, exposure: lan, purpose: RTSP restream }
+    auth: none
+    calls:
+      - { target: cam-door, via: rtsp, port: 554, purpose: Camera stream }
+      - { target: cam-garden, via: rtsp, port: 554, purpose: Camera stream }
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Detection events }
+    logs: { dozzle: { host: home, container: frigate } }
+
+  - id: zigbee2mqtt
+    name: Zigbee2MQTT
+    node: ct-home
+    kind: container
+    stack: home
+    ports:
+      - { port: 8080, proto: tcp, auth: none, exposure: internal, purpose: Web }
+    auth: none
+    calls:
+      - { target: mosquitto, via: mqtt, port: 1883, purpose: Device bridge }
+
+  - id: mosquitto
+    name: Mosquitto
+    node: ct-home
+    kind: container
+    stack: home
+    ports:
+      - { port: 1883, proto: tcp, auth: own, exposure: internal, purpose: MQTT }
+    auth: own
+
+  # Bots and dashboards.
+  - id: notify-bot
+    name: Notify bot
+    node: vm-docker
+    kind: container
+    stack: bots
+    calls:
+      - { target: route-home, via: https, purpose: Home Assistant API }
+      - { target: Telegram Bot API, via: https, purpose: Messages }
+    logs: { dozzle: { host: docker, container: notify-bot } }
+
+  - id: homepage
+    name: Homepage
+    node: vm-docker
+    kind: container
+    stack: observability
+    ports:
+      - { port: 3010, proto: tcp, auth: authelia, exposure: lan, purpose: Dashboard }
+    auth: authelia
+    calls:
+      - { target: sonarr, via: http, purpose: Widget, kind: observe }
+      - { target: radarr, via: http, purpose: Widget, kind: observe }
+      - { target: qbittorrent, via: http, purpose: Widget, kind: observe }
+      - { target: jellyfin, via: http, purpose: Widget, kind: observe }
+      - { target: requests, via: http, purpose: Widget, kind: observe }
+      - { target: home-assistant, via: http, purpose: Widget, kind: observe }
+      - { target: uptime-kuma, via: http, purpose: Widget, kind: observe }
+      - { target: adguard, via: http, purpose: Widget, kind: observe }
+      - { target: proxmox-ui, via: https, purpose: Widget, kind: observe }
+      - { target: photos, via: http, purpose: Widget, kind: observe }
+
+  - id: system-map
+    name: System Map
+    node: vm-docker
+    kind: container
+    stack: observability
+    ports:
+      - { port: 8080, proto: tcp, auth: authelia, exposure: internal, purpose: Web }
+    auth: authelia
+    calls:
+      - { target: uptime-kuma, via: http, purpose: Metrics, kind: observe }
+      - { target: dozzle, via: http, purpose: Live logs, kind: observe }
+
+  - id: old-dashboard
+    name: Old dashboard
+    node: vm-docker
+    kind: container
+    stack: observability
+    status: retired
+    notes: Replaced by Homepage.
+    calls:
+      - { target: jellyfin, via: http, kind: observe }

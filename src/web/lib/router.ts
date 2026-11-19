@@ -13,25 +13,42 @@ export const VIEWS = [
 ] as const;
 export type View = (typeof VIEWS)[number];
 
+export const GRAPH_MODES = ['apps', 'infra'] as const;
+export type GraphMode = (typeof GRAPH_MODES)[number];
+export const isGraphMode = (v: unknown): v is GraphMode =>
+  (GRAPH_MODES as readonly unknown[]).includes(v);
+
 export interface Location {
   view: View;
+  /** Graph mode named in the URL (graph view only); otherwise the saved preference applies. */
+  graph?: GraphMode;
   /** Entity whose detail panel is open. */
   entity?: string;
 }
 
-/** `#/<view>`, `#/<view>/n/<id>`, and the short deep link `#/n/<id>` (graph view). */
+/**
+ * `#/<view>`, `#/<view>/n/<id>`, the short deep link `#/n/<id>` (graph view), and
+ * `#/graph/<mode>[/n/<id>]` for a graph mode.
+ */
 export function parseHash(hash: string): Location {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(safeDecode);
   let view: View = 'graph';
   if (parts[0] && (VIEWS as readonly string[]).includes(parts[0])) {
     view = parts.shift() as View;
   }
+  const graph =
+    view === 'graph' && isGraphMode(parts[0]) ? (parts.shift() as GraphMode) : undefined;
   const entity = parts[0] === 'n' && parts[1] ? parts[1] : undefined;
-  return entity ? { view, entity } : { view };
+  return { view, ...(graph ? { graph } : {}), ...(entity ? { entity } : {}) };
 }
 
 export function formatHash(loc: Location): string {
-  const base = loc.view === 'graph' && loc.entity ? '#' : `#/${loc.view}`;
+  const graph = loc.view === 'graph' ? loc.graph : undefined;
+  const base = graph
+    ? `#/graph/${graph}`
+    : loc.view === 'graph' && loc.entity
+      ? '#'
+      : `#/${loc.view}`;
   return loc.entity ? `${base}/n/${encodeURIComponent(loc.entity)}` : base;
 }
 

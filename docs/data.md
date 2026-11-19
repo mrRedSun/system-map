@@ -24,6 +24,7 @@ Rules for people and agents who edit the System Map data. The JSON Schema in
   | `nodes[].parent`, `mounts[].storage`                                                                       | a node         |
   | `nodes[].network`                                                                                          | a network      |
   | `services[].node`, `jobs[].node`                                                                           | a node         |
+  | `services[].stack`                                                                                         | a stack        |
   | `services[].health.kuma[]`                                                                                 | a monitor      |
   | `monitors[].node`                                                                                          | a node         |
   | `routes[].target`, `monitors[].service`                                                                    | a service      |
@@ -32,6 +33,41 @@ Rules for people and agents who edit the System Map data. The JSON Schema in
 - `services[].calls[].target` is an id or free text for something outside the model
   (`Telegram Bot API`, `api.cloudflare.com`). Free text that looks like an id (`wiki-dbb`) gets a
   warning, because it is probably a typo.
+
+## Stacks and the Apps graph
+
+The Apps graph groups services into boxes by stack. Stacks are optional: without any, apps are not
+boxed.
+
+```yaml
+stacks:
+  - { id: media, name: Media, color: violet, order: 2 }
+  - { id: dashboards, name: Dashboards, color: amber, order: 1 }
+
+services:
+  - id: sonarr
+    stack: media
+    calls:
+      - { target: prowlarr, via: http, purpose: Indexer search }
+      - { target: route-requests, via: https } # lands on the route's target service
+      - { target: TVDB API, via: https } # free text: an external card
+  - id: homepage
+    stack: dashboards
+    calls:
+      - { target: sonarr, via: http, purpose: Widget, kind: observe }
+```
+
+- `stacks[]`: `id`, `name` (box label, default the id), `color` (one of `gray`, `red`, `orange`,
+  `amber`, `lime`, `green`, `teal`, `cyan`, `blue`, `indigo`, `violet`, `pink`; default: picked in
+  turn), `order` (lower first; unset ones follow in file order). Boxes are packed in this order,
+  left to right, then down.
+- `services[].stack`: a stack id. Services without one, or with an unknown one (an error), go in
+  **Other**.
+- `services[].calls[].kind`: `use` (default) or `observe`. Use `observe` for dashboards, monitors
+  and the like that read another app; those edges are drawn faint and ignored by the layout, so a
+  dashboard calling ten apps does not pull them into one column.
+- Free-text call targets that differ only in case or spacing (`Telegram API`, `telegram api`) are
+  one external card.
 
 ## Derived edges
 
@@ -68,6 +104,8 @@ The app lists problems prominently, and `npm run validate` prints them.
 - A monitor points at a `service`, or at a `node` for host pings (host, guests, cameras), or at
   neither (push monitors). Setting both is an error.
 - `monitors[].active` defaults to true.
+- Two calls from the same service to the same target are one edge in the Apps graph, with a count
+  and both purposes.
 - Markdown fields (`notes`, `rule`, `body`, `summary`, `restore`, `rollback`, `meta.conventions`)
   render without raw HTML. Links must be `http(s)`.
 - Never put secret values in the data. `secrets[]` holds paths and purposes only.

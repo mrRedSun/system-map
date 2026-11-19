@@ -142,8 +142,15 @@
   --health-down: oklch(0.63 0.22 25);
   --health-pending: oklch(0.78 0.15 80);
   --health-maintenance: oklch(0.62 0.15 250);
+  --edge-observes: oklch(0.6 0.02 260);
+  /* Stack tints: lightness and chroma per theme; the hue comes from the stack color. */
+  --stack-l: 0.56;
+  --stack-c: 0.16;
 }
 .dark {
+  --edge-observes: oklch(0.62 0.02 260);
+  --stack-l: 0.76;
+  --stack-c: 0.13;
   --edge-calls: oklch(0.7 0.14 255);
   --edge-routes: oklch(0.78 0.15 65);
   --edge-mounts: oklch(0.74 0.1 185);

@@ -2,8 +2,8 @@
 
 An interactive, read-only map of a self-hosted server. A directory of YAML files describes the
 whole system (host, guests, services, routes, firewall, jobs, backups, history), and is the single
-source of truth. System Map renders those files as a topology graph with detail panels, and overlays
-live health from Uptime Kuma and live logs from Dozzle.
+source of truth. System Map renders those files as a graph with detail panels, and overlays live
+health from Uptime Kuma and live logs from Dozzle.
 
 The app never writes to the data. People and agents edit the YAML; the map reloads on save.
 
@@ -39,6 +39,27 @@ Dozzle hub ──► log proxy (allowlisted containers only) ──► /api/logs
 | `/api/me`                             | `Remote-User` / `Remote-Name` from the auth proxy, for display only.                        |
 | `/healthz`                            | 200 once a model is loaded, 503 before.                                                     |
 | `/schema/system-map.schema.json`      | The JSON Schema.                                                                            |
+
+## Graph
+
+The graph has two modes, switched in its toolbar. The choice is remembered per browser and kept in
+the URL (`#/graph/apps`, `#/graph/infra`, `#/graph/apps/n/<id>`).
+
+- **Apps** (default): one card per service, grouped into boxes by `stack`, with `calls` as arrows
+  from caller to callee. Each stack is laid out left to right (callers first); the boxes are packed
+  to fit the screen. Calls to a route land on the route's target (the hostname is noted on the
+  edge), calls to nodes show small device cards, and free-text targets show dashed external cards.
+  Devices and externals sit in the one stack that calls them, or in **Outside** when several do.
+  `kind: observe` calls (dashboards, monitors) are drawn faint and do not affect the layout. A
+  globe marks apps with a public route; hover a card for its ports and hostnames, hover an edge
+  for its purpose. Selecting an app highlights its neighbours; **Focus** (`f`) hides the rest.
+  Toolbar: external cards, ingress edges (reverse proxy → public apps), collapse/expand stacks,
+  retired apps.
+- **Infrastructure**: the containment tree (host → guests → services) with routes, mounts,
+  monitors and backups.
+
+The graph transforms (`src/web/graph/apps.ts`, `topology.ts`), the layout and the edge label
+placement are pure functions with unit tests.
 
 ## Data
 
@@ -134,8 +155,9 @@ Open http://localhost:5173. Edit a file in `examples/` and the page updates.
 ```sh
 npm run typecheck
 npm run lint         # ESLint + Prettier
-npm test             # Vitest: schema, merge, references, store, HTTP, topology, layout,
-                     # search, markdown, Kuma parser/client, Dozzle proxy (fake upstream)
+npm test             # Vitest: schema, merge, references, store, HTTP, topology, apps graph,
+                     # layout, edge labels, search, markdown, Kuma parser/client, Dozzle proxy
+                     # (fake upstream)
 npm run schema:check # fails if schema/system-map.schema.json is stale (fix: npm run schema)
 npm run build        # dist/public (SPA) + dist/server.mjs (bundled server)
 ```

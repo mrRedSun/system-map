@@ -1,5 +1,5 @@
 import { AlertTriangle, Menu, Moon, Search, Sun, WifiOff } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SystemModel } from '../shared/model';
 import { AppContext, type AppContextValue } from '@/app-context';
 import { Badge } from '@/components/ui/badge';
@@ -15,7 +15,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { GraphView } from '@/graph/GraphView';
 import { useModel, useWhoAmI } from '@/lib/api';
 import { backRefs, indexModel } from '@/lib/model-index';
-import { VIEWS, formatHash, useLocation, type View } from '@/lib/router';
+import { usePersisted } from '@/lib/persisted';
+import {
+  VIEWS,
+  formatHash,
+  isGraphMode,
+  useLocation,
+  type GraphMode,
+  type View,
+} from '@/lib/router';
 import { useEntityHealth, useHealth } from '@/lib/health';
 import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
@@ -57,6 +65,20 @@ export function App() {
   const index = useMemo(() => (model ? indexModel(model) : undefined), [model]);
   const statuses = useEntityHealth(model, index, health);
 
+  // Graph mode: the URL wins and is remembered; otherwise the saved preference (Apps by default).
+  const [savedMode, setSavedMode] = usePersisted<GraphMode>('graph-mode', 'apps', isGraphMode);
+  const graphMode = location.graph ?? savedMode;
+  useEffect(() => {
+    if (location.graph) setSavedMode(location.graph);
+  }, [location.graph, setSavedMode]);
+  const setGraphMode = useCallback(
+    (mode: GraphMode) => {
+      setSavedMode(mode);
+      navigate({ ...location, view: 'graph', graph: mode });
+    },
+    [location, navigate, setSavedMode],
+  );
+
   const ctx = useMemo<AppContextValue | undefined>(() => {
     if (!model || !index) return undefined;
     return {
@@ -65,7 +87,7 @@ export function App() {
       backRefs: backRefs(model),
       location,
       navigate,
-      hrefFor: (id) => formatHash({ view: location.view, entity: id }),
+      hrefFor: (id) => formatHash({ view: location.view, graph: location.graph, entity: id }),
       healthOf: (id) => statuses.get(id),
     };
   }, [model, index, location, navigate, statuses]);
@@ -90,8 +112,8 @@ export function App() {
   }, [health, model]);
 
   const closePanel = useCallback(
-    () => navigate({ view: location.view }),
-    [navigate, location.view],
+    () => navigate({ view: location.view, graph: location.graph }),
+    [navigate, location.view, location.graph],
   );
 
   const errors = model?.problems.filter((p) => p.severity === 'error').length ?? 0;
@@ -213,8 +235,10 @@ export function App() {
                   model={ctx.model}
                   index={ctx.index}
                   selected={location.entity}
-                  onSelect={(id) => navigate({ view: 'graph', entity: id })}
+                  onSelect={(id) => navigate({ view: 'graph', graph: location.graph, entity: id })}
                   healthOf={ctx.healthOf}
+                  mode={graphMode}
+                  onMode={setGraphMode}
                 />
               ) : (
                 PAGES[location.view]()

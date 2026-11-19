@@ -62,7 +62,10 @@ export function search(docs: SearchDoc[], query: string, limit = 50): SearchHit[
     const inHeader = tokens.every((t) => id.includes(t) || name.includes(t));
     const snippet = inHeader
       ? undefined
-      : doc.lines.find((l) => tokens.some((t) => l.toLowerCase().includes(t)));
+      : doc.lines
+          .find((l) => tokens.some((t) => l.toLowerCase().includes(t)))
+          // `[[id]]` entity links read as plain ids in a one-line preview.
+          ?.replace(/\[\[([a-z0-9-]+)\]\]/g, '$1');
     hits.push({ doc, score, snippet });
   }
   hits.sort((a, b) => b.score - a.score || a.doc.id.localeCompare(b.doc.id));

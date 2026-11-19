@@ -33,7 +33,9 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Example data validates
-        run: npm run validate -- examples
+        run: |
+          npm run validate -- examples --strict
+          npm run validate -- examples/showcase --strict
 
   image:
     needs: test

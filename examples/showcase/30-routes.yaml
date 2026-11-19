@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=../../schema/system-map.schema.json
+
+routes:
+  - id: route-auth
+    host: auth.home.example
+    via: traefik
+    target: authelia
+    upstream: http://authelia:9091
+    auth: app
+    middlewares: [secure-headers@file]
+  - id: route-watch
+    host: watch.home.example
+    via: traefik
+    target: jellyfin
+    upstream: http://10.20.0.20:8096
+    auth: app
+    middlewares: [crowdsec@file, secure-headers@file]
+  - id: route-requests
+    host: requests.home.example
+    via: traefik
+    target: jellyseerr
+    upstream: http://10.20.0.20:5055
+    auth: app
+    middlewares: [crowdsec@file, secure-headers@file]
+  - id: route-photos
+    host: photos.home.example
+    via: traefik
+    target: immich
+    upstream: http://immich:2283
+    auth: app
+    middlewares: [crowdsec@file, secure-headers@file]
+    notes: Uploads up to 50 GB per request; the body size limit is raised for this router only.
+  - id: route-docs
+    host: docs.home.example
+    via: traefik
+    target: paperless
+    upstream: http://paperless:8000
+    auth: authelia
+    middlewares: [authelia@file, crowdsec@file, secure-headers@file]
+  - id: route-home
+    host: ha.home.example
+    via: traefik
+    target: home-assistant
+    upstream: http://10.20.0.40:8123
+    auth: app
+    middlewares: [crowdsec@file, secure-headers@file]
+  - id: route-git
+    host: git.home.example
+    via: traefik
+    target: forgejo
+    upstream: http://10.20.0.60:3000
+    auth: app
+    middlewares: [crowdsec@file, secure-headers@file]
+  - id: route-chat
+    host: chat.home.example
+    via: traefik
+    target: open-webui
+    upstream: http://10.20.0.50:8080
+    auth: authelia
+    middlewares: [authelia@file, secure-headers@file]
+  - id: route-grafana
+    host: grafana.home.example
+    via: traefik
+    target: grafana
+    upstream: http://grafana:3000
+    auth: authelia
+    middlewares: [authelia@file, secure-headers@file]
+  - id: route-status
+    host: status.home.example
+    via: traefik
+    target: uptime-kuma
+    paths: [/status/*]
+    upstream: http://uptime-kuma:3001
+    auth: none
+    middlewares: [secure-headers@file]
+    notes: Only the public status page; the Kuma admin UI stays on the LAN.
+  - id: route-map
+    host: map.home.example
+    via: traefik
+    target: system-map
+    upstream: http://system-map:8080
+    auth: authelia
+    middlewares: [authelia@file, secure-headers@file]
+  - id: route-vpn
+    host: vpn.home.example
+    via: router-forward
+    target: wireguard
+    auth: key
+
+monitors:
+  - { id: kuma-1, kuma_id: 1, name: Authelia, type: http, target: 'https://auth.home.example/api/health', service: authelia, group: Public }
+  - { id: kuma-2, kuma_id: 2, name: Jellyfin, type: http, target: 'https://watch.home.example/health', service: jellyfin, group: Public }
+  - { id: kuma-3, kuma_id: 3, name: Requests, type: http, target: 'https://requests.home.example/api/v1/status', service: jellyseerr, group: Public }
+  - { id: kuma-4, kuma_id: 4, name: Photos, type: http, target: 'https://photos.home.example/api/server/ping', service: immich, group: Public }
+  - { id: kuma-5, kuma_id: 5, name: Documents, type: http, target: 'http://10.20.0.10:8000/', service: paperless, group: LAN }
+  - { id: kuma-6, kuma_id: 6, name: Home Assistant, type: http, target: 'https://ha.home.example/', service: home-assistant, group: Public }
+  - { id: kuma-7, kuma_id: 7, name: Git, type: http, target: 'https://git.home.example/api/healthz', service: forgejo, group: Public }
+  - { id: kuma-8, kuma_id: 8, name: DNS, type: dns, target: 10.20.0.53, service: adguard, group: LAN, interval_s: 30 }
+  - { id: kuma-9, kuma_id: 9, name: Sonarr, type: http, target: 'http://10.20.0.20:8989/ping', service: sonarr, group: LAN }
+  - { id: kuma-10, kuma_id: 10, name: Radarr, type: http, target: 'http://10.20.0.20:7878/ping', service: radarr, group: LAN }
+  - { id: kuma-11, kuma_id: 11, name: qBittorrent, type: http, target: 'http://10.20.0.20:8081/', service: qbittorrent, group: LAN }
+  - { id: kuma-12, kuma_id: 12, name: MQTT, type: port, target: '10.20.0.40:1883', service: mosquitto, group: LAN }
+  - { id: kuma-13, kuma_id: 13, name: Ollama, type: http, target: 'http://10.20.0.50:11434/', service: ollama, group: LAN }
+  - { id: kuma-14, kuma_id: 14, name: Proxmox UI, type: http, target: 'https://10.20.0.2:8006/', service: proxmox-ui, group: LAN }
+  - { id: kuma-15, kuma_id: 15, name: Proxmox host, type: ping, target: 10.20.0.2, node: pve, group: Hosts }
+  - { id: kuma-16, kuma_id: 16, name: Media host, type: ping, target: 10.20.0.20, node: ct-media, group: Hosts }
+  - { id: kuma-17, kuma_id: 17, name: Front door camera, type: ping, target: 10.20.30.11, node: cam-front, group: Cameras }
+  - { id: kuma-18, kuma_id: 18, name: Garage camera, type: ping, target: 10.20.30.12, node: cam-garage, group: Cameras }
+  - id: kuma-19
+    kuma_id: 19
+    name: Garden camera
+    type: ping
+    target: 10.20.30.13
+    node: cam-garden
+    group: Cameras
+    active: false
+    notes: Paused while the camera is switched off for the winter.
+  - { id: kuma-20, kuma_id: 20, name: Offsite backup, type: push, group: Jobs, interval_s: 90000 }

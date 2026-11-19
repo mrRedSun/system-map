@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=../../schema/system-map.schema.json
+# Fictional showcase data for screenshots and demos. Not a real system: every name, address and
+# hostname is made up or comes from a range reserved for documentation.
+version: 1
+
+meta:
+  title: Northwind homelab
+  owner: Example owner
+  domain: home.example
+  timezone: Europe/Amsterdam
+  updated: 2026-11-15
+  description: |
+    One Proxmox server in a closet runs the whole house: the front door for the web, films and
+    series, the smart home and cameras, photos and paperwork, a local AI and a git forge, a few
+    chat bots, and the monitoring that watches all of it.
+  conventions: |
+    - Compose stacks live in `/opt/stacks/<stack>` on each Docker guest.
+    - Containers are named after their service id, so the logs in this map match `docker ps`.
+    - Every change gets a `history` entry, with the rollback when there is one.
+
+policies:
+  - id: policy-no-public-admin
+    title: No public admin UIs
+    rule: |
+      Admin interfaces are **never** reachable from the internet without [[authelia]] in front.
+      Use the LAN or [[wireguard]] instead.
+    why: A leaked admin UI is a full compromise of the guest behind it.
+    since: 2025-04-06
+    scope: [traefik, authelia, proxmox-ui, adguard]
+  - id: policy-pin-images
+    title: Pin container images
+    rule: Every container image is pinned to a version tag; `latest` is not allowed.
+    why: Rebuilds are reproducible and upgrades happen on purpose, one stack at a time.
+    since: 2025-06-21
+    scope: [vm-docker, ct-media, ct-home, ct-dev]
+  - id: policy-two-factor
+    title: Two factors for everything public
+    rule: |
+      Every route that is not a public page needs a second factor, either through
+      [[authelia]] or the app's own TOTP.
+    why: Passwords leak; a one-time code makes a leaked password useless on its own.
+    since: 2025-09-02
+    scope: [authelia, route-docs, route-chat, route-grafana, route-map]
+  - id: policy-iot-isolation
+    title: Cameras stay on the IoT network
+    rule: |
+      Cameras and other IoT devices live on [[iot]] and may only talk to [[ct-home]]. They never
+      reach the internet.
+    why: Cheap cameras phone home and rarely get security updates.
+    since: 2026-02-14
+    scope: [iot, cam-front, cam-garage, cam-garden, frigate]
+
+procedures:
+  - id: proc-update-stack
+    title: Update a compose stack
+    applies_to: [vm-docker, ct-media, ct-home, ct-dev]
+    body: |
+      1. Read the release notes of the new version.
+      2. Bump the pinned tag in `/opt/stacks/<stack>/compose.yaml`.
+      3. Run `docker compose pull && docker compose up -d`.
+      4. Watch the health dots and the live logs in this map for five minutes.
+      5. Add a `history` entry with the rollback command.
+  - id: proc-add-route
+    title: Add a public route
+    applies_to: [traefik, zone-home-example]
+    body: |
+      - Add a Traefik router with the `authelia@file` middleware unless the app has its own login.
+      - The wildcard DNS record already covers new hostnames; nothing to do in the zone.
+      - Add a `routes` entry and an Uptime Kuma monitor here, then check [[policy-two-factor]].
+  - id: proc-restore-guest
+    title: Restore a guest from the nightly snapshot
+    applies_to: [pve, backup-guests]
+    body: |
+      1. Stop the broken guest in [[proxmox-ui]].
+      2. Pick the newest good snapshot under *Storage → tank-backup → Backups*.
+      3. Restore it over the guest (same VMID) and start it.
+      4. Check its monitors in this map; restore the database from [[backup-db]] if the guest
+         holds one.

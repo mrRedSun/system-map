@@ -1,0 +1,251 @@
+# yaml-language-server: $schema=../../schema/system-map.schema.json
+
+jobs:
+  - id: job-vzdump
+    node: pve
+    schedule: daily 02:30
+    command: vzdump --all --mode snapshot --storage tank-backup
+    source: Datacenter → Backup → nightly-guests
+    purpose: Snapshot backups of every guest marked for backup.
+    notifies: email on failure
+  - id: job-pg-dump
+    node: ct-db
+    schedule: daily 01:45
+    command: /usr/local/bin/pg-dump-all
+    source: /etc/systemd/system/pg-dump-all.timer
+    purpose: Logical dump of every database, so one app can be restored without the others.
+    notifies: false
+  - id: job-offsite
+    node: pve
+    schedule: daily 04:00
+    command: /usr/local/bin/offsite-backup
+    source: /etc/systemd/system/offsite-backup.timer
+    purpose: Push the guest snapshots, database dumps, photos and documents to the offsite store.
+    notifies: Uptime Kuma push monitor kuma-20
+  - id: job-zfs-scrub
+    node: pve
+    schedule: monthly, 2nd Sunday 03:00
+    command: zpool scrub tank
+    purpose: Reads every block on the pool to catch failing disks early.
+    notifies: email on errors
+  - id: job-docker-prune
+    node: vm-docker
+    schedule: weekly Sun 05:00
+    command: docker system prune -af --filter until=168h
+    purpose: Removes old images after upgrades.
+    notifies: false
+
+backups:
+  - id: backup-guests
+    what: Guest snapshots (vzdump)
+    from: [vm-docker, ct-dns, ct-media, ct-files, ct-db, ct-home, vm-ai, ct-dev]
+    to: tank/backup/dump
+    schedule: daily 02:30
+    retention: keep-daily=7, keep-weekly=4
+    offsite: false
+    encrypted: false
+    restore: |
+      Follow [[proc-restore-guest]]: `qmrestore` or `pct restore` from `/tank/backup/dump`, then
+      start the guest and check its monitors.
+  - id: backup-db
+    what: Database dumps
+    from: [postgres]
+    to: tank/backup/postgres
+    schedule: daily 01:45
+    retention: keep 14 dumps
+    offsite: false
+    encrypted: false
+    restore: |
+      ```sh
+      gunzip -c /tank/backup/postgres/<date>/immich.sql.gz | psql -h 10.20.0.30 -U postgres immich
+      ```
+      Stop the app first, restore its database, then start it again.
+  - id: backup-photos
+    what: Photo, document and file snapshots
+    from: [immich, paperless, syncthing]
+    to: ZFS snapshots on tank
+    schedule: hourly, daily
+    retention: 24 hourly, 30 daily
+    offsite: false
+    encrypted: false
+    restore: |
+      Copy the file back from `/tank/photos/.zfs/snapshot/<name>/`. For a whole folder, use
+      `zfs rollback` only after checking nothing newer would be lost.
+  - id: backup-offsite
+    what: Offsite copy of guest snapshots, database dumps, photos and documents
+    from: [backup-guests, backup-db, immich, paperless]
+    to: restic repository on the offsite object store
+    schedule: daily 04:00
+    retention: keep-daily=14, keep-weekly=8, keep-monthly=12
+    offsite: true
+    encrypted: true
+    restore: |
+      1. On any machine with restic, set the repository and password from the password manager.
+      2. List snapshots and pick one:
+         ```sh
+         restic -r "$REPO" snapshots
+         ```
+      3. Restore into an empty folder on [[tank]]:
+         ```sh
+         restic -r "$REPO" restore <snapshot> --target /tank/restore
+         ```
+      4. Restore guests with [[proc-restore-guest]] and databases from the dumps in the restore.
+    notes: The repository password is kept on paper in the house and in the password manager.
+
+history:
+  - id: h-2026-11-12-authelia
+    date: 2026-11-12
+    title: Upgrade Authelia to 4.39.14
+    summary: Routine upgrade; passkeys now work as a second factor.
+    refs: [authelia]
+    rollback: Pin `authelia/authelia:4.39.13` again and `docker compose up -d`.
+  - id: h-2026-10-28-garden-cam
+    date: 2026-10-28
+    title: Switch the garden camera off for winter
+    summary: The camera is unplugged and its monitor paused, so it does not alert all winter.
+    refs: [cam-garden, kuma-19]
+  - id: h-2026-10-05-tdarr
+    date: 2026-10-05
+    title: Stop Tdarr
+    summary: The pool was above 85 % full; re-encoding needs room for temporary copies.
+    refs: [tdarr, tank]
+    rollback: '`docker compose start tdarr` on [[ct-media]] once the pool has room.'
+  - id: h-2026-09-14-crowdsec
+    date: 2026-09-14
+    title: Add CrowdSec in front of public routes
+    summary: |
+      [[crowdsec]] reads the Traefik logs and blocks addresses that scan for logins. The bouncer
+      runs as a Traefik middleware on every public route except the auth portal.
+    refs: [crowdsec, traefik]
+    rollback: Remove `crowdsec@file` from the routers and restart Traefik.
+  - id: h-2026-08-02-door-bot
+    date: 2026-08-02
+    title: Add the door bot
+    summary: Doorbell rings now send a snapshot to the family chat within two seconds.
+    refs: [door-bot, frigate, cam-front]
+  - id: h-2026-06-20-ai-vm
+    date: 2026-06-20
+    title: Move the language models to their own VM
+    summary: |
+      [[ollama]] and [[open-webui]] moved from the Docker VM to [[vm-ai]], which has the graphics
+      card. Answers are about eight times faster.
+    refs: [vm-ai, ollama, open-webui]
+  - id: h-2026-05-09-postgres
+    date: 2026-05-09
+    title: Move databases to one PostgreSQL server
+    summary: Immich, Paperless, Forgejo and Authelia now share [[postgres]] instead of four containers.
+    refs: [postgres, ct-db, backup-db]
+    rollback: The old per-app containers are still in the compose files, commented out, with their volumes.
+  - id: h-2026-04-01-legacy
+    date: 2026-04-01
+    title: Retire the legacy VM
+    summary: Its last app, the old start page, was replaced by [[homepage]].
+    refs: [vm-legacy, heimdall, homepage]
+  - id: h-2026-02-14-iot
+    date: 2026-02-14
+    title: Put the cameras on their own network
+    summary: The cameras moved to the [[iot]] VLAN with no internet access.
+    refs: [iot, cam-front, cam-garage, cam-garden, policy-iot-isolation]
+    rollback: Move the camera switch ports back to the default VLAN in the router.
+  - id: h-2026-01-18-pve
+    date: 2026-01-18
+    title: Upgrade the Proxmox host to 9.1
+    summary: In-place upgrade during the Sunday window; all guests came back on their own.
+    refs: [pve]
+
+open_questions:
+  - id: q-media-backup
+    question: Should the media library get an offsite copy after all, now that it is 9 TB?
+    refs: [ct-media, tank, backup-offsite]
+  - id: q-kuma-push
+    question: Does the offsite job ping kuma-20 even when restic exits with an error?
+    refs: [job-offsite, kuma-20]
+  - id: q-single-host
+    question: Is one server enough, or should the front door and DNS move to a small second box?
+    refs: [pve, traefik, adguard]
+
+# Hand-written wiki pages. `[[id]]` links to an entity.
+articles:
+  - id: art-request-path
+    title: How a request reaches an app
+    order: 1
+    refs: [traefik, authelia, crowdsec, router]
+    body: |
+      ## From the browser to the house
+
+      Someone opens `photos.home.example`. Cloudflare answers DNS and passes the request on to
+      the home connection, where the [[router]] forwards port 443 to [[traefik]] on
+      [[vm-docker]].
+
+      ## Inside
+
+      1. Traefik asks [[crowdsec]] whether the address is on a blocklist.
+      2. It matches the hostname to a route, here [[route-photos]].
+      3. Routes marked with Authelia send the visitor to [[authelia]] first; after the password
+         and one-time code the request continues.
+      4. The app answers, and Traefik sends the page back.
+
+      ## When it does not work
+
+      - Check the route in the Routes view and the app's health dot.
+      - Open Traefik's live logs from its page and search for the hostname.
+      - A `403` from everything usually means CrowdSec blocked your own address.
+  - id: art-backups
+    title: How backups work
+    order: 2
+    refs: [tank, backup-guests, backup-db, backup-offsite]
+    body: |
+      Three layers, from fastest to safest:
+
+      | Layer | What | Where |
+      | --- | --- | --- |
+      | Snapshots | Photos, documents, files, every hour | [[tank]] |
+      | Nightly | Every guest and every database | [[backup-guests]], [[backup-db]] |
+      | Offsite | The nightly backups plus photos and documents, encrypted | [[backup-offsite]] |
+
+      ## What is not backed up
+
+      - Films and series: they can be downloaded again.
+      - Camera recordings: kept for 14 days and then gone.
+      - AI models: pulled again on demand.
+
+      ## Restoring
+
+      A deleted photo: take it from the hourly snapshot. A broken guest: [[proc-restore-guest]].
+      A lost house: the offsite copy, with the steps on [[backup-offsite]].
+  - id: art-media-down
+    title: What to do when films do not play
+    order: 3
+    refs: [jellyfin, ct-media, sonarr, radarr, qbittorrent]
+    body: |
+      ## Nothing plays at all
+
+      1. Look at the health dot of [[jellyfin]]. If it is red, check [[ct-media]] in the
+         Infrastructure view: is the container running?
+      2. If the container runs, open Jellyfin's live logs. `Permission denied` under
+         `/srv/media` means the share on [[tank]] is not mounted.
+      3. Restart the stack on the media host:
+         ```sh
+         cd /opt/stacks/media && docker compose restart
+         ```
+
+      ## A request never shows up
+
+      - Is it in [[jellyseerr]]? If not, the request never arrived.
+      - Is it in [[sonarr]] or [[radarr]], marked *missing*? Then the indexers found nothing;
+        try again later.
+      - Is it stuck in [[qbittorrent]]? A download without peers can take days.
+  - id: art-doorbell
+    title: What happens when someone rings
+    order: 4
+    refs: [cam-front, frigate, door-bot, home-assistant]
+    body: |
+      The doorbell button is a Zigbee switch. [[zigbee2mqtt]] puts the press on [[mosquitto]],
+      and three things happen at once:
+
+      - [[home-assistant]] turns on the hall light after dark and plays the chime.
+      - [[door-bot]] asks [[frigate]] for a fresh picture from [[cam-front]] and posts it to the
+        family chat.
+      - Frigate keeps the clip, so it can be watched later from Home Assistant.
+
+      None of this needs the internet except the chat message.

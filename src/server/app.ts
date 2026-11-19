@@ -1,4 +1,5 @@
 /** HTTP surface: read-only API, SSE notifications, and the built SPA. */
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -34,20 +35,28 @@ export interface AppDeps {
   heartbeatMs?: number;
 }
 
-export const CSP = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self'",
-  // React Flow and Radix position elements with inline style attributes.
-  "style-src-attr 'unsafe-inline'",
-  "img-src 'self' data:",
-  "font-src 'self'",
-  "connect-src 'self'",
-  "manifest-src 'self'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join('; ');
+/** CSP for everything except the SPA page, which adds a per-response style nonce. */
+export const CSP = cspWith("style-src 'self'");
+
+/** Placeholder in index.html replaced by the per-response nonce. */
+export const NONCE_PLACEHOLDER = '__CSP_NONCE__';
+
+function cspWith(styleSrc: string): string {
+  return [
+    "default-src 'none'",
+    "script-src 'self'",
+    styleSrc,
+    // React Flow and Radix position elements with inline style attributes.
+    "style-src-attr 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "manifest-src 'self'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+}
 
 const MAX_HEADER_VALUE = 200;
 
@@ -81,7 +90,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.text('Method Not Allowed', 405, { Allow: 'GET, HEAD' });
     }
     await next();
-    c.header('Content-Security-Policy', CSP);
+    if (!c.res.headers.has('Content-Security-Policy')) c.header('Content-Security-Policy', CSP);
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
     c.header('X-Frame-Options', 'DENY');
@@ -171,6 +180,16 @@ export function createApp(deps: AppDeps): Hono {
   if (deps.publicDir && existsSync(join(deps.publicDir, 'index.html'))) {
     const root = deps.publicDir;
     const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
+    // Libraries that inject <style> tags (dialog scroll lock) read this nonce via get-nonce.
+    const spa = (c: Context) => {
+      const nonce = randomBytes(16).toString('base64');
+      return c.html(indexHtml.replaceAll(NONCE_PLACEHOLDER, nonce), 200, {
+        'Cache-Control': 'no-cache',
+        'Content-Security-Policy': cspWith(`style-src 'self' 'nonce-${nonce}'`),
+      });
+    };
+    app.get('/', spa);
+    app.get('/index.html', spa);
     app.use('*', async (c, next) => {
       await next();
       if (c.res.status !== 200 || c.res.headers.has('Cache-Control')) return;
@@ -183,7 +202,7 @@ export function createApp(deps: AppDeps): Hono {
     });
     app.use('*', compress(), serveStatic({ root }));
     // Unknown paths get the SPA; routing happens in the URL hash.
-    app.get('*', (c) => c.html(indexHtml));
+    app.get('*', spa);
   }
   return app;
 }

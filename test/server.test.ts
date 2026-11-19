@@ -208,13 +208,24 @@ describe('app', () => {
   it('serves the SPA with long-lived caching only for hashed assets', async () => {
     const pub = join(dir, 'public');
     mkdirSync(join(pub, 'assets'), { recursive: true });
-    writeFileSync(join(pub, 'index.html'), '<!doctype html><title>x</title>');
+    writeFileSync(
+      join(pub, 'index.html'),
+      '<!doctype html><meta name="csp-nonce" content="__CSP_NONCE__"><title>x</title>',
+    );
     writeFileSync(join(pub, 'assets', 'app-abc.js'), 'console.log(1)');
     const { app } = await setup({ publicDir: pub });
 
     const index = await app.request('/');
     expect(index.status).toBe(200);
     expect(index.headers.get('cache-control')).toBe('no-cache');
+    // Each page load gets its own style nonce, in both the CSP and the page.
+    const nonce = /'nonce-([^']+)'/.exec(index.headers.get('content-security-policy')!)?.[1];
+    expect(nonce).toMatch(/^[A-Za-z0-9+/=]{24}$/);
+    expect(await index.text()).toContain(`content="${nonce}"`);
+    const again = await app.request('/');
+    expect(again.headers.get('content-security-policy')).not.toContain(nonce);
+    // Other responses keep the nonce-free policy.
+    expect((await app.request('/api/model')).headers.get('content-security-policy')).toBe(CSP);
     const asset = await app.request('/assets/app-abc.js');
     expect(asset.headers.get('cache-control')).toContain('immutable');
     const deep = await app.request('/some/client/path');

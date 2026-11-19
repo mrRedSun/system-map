@@ -94,3 +94,56 @@ export function exposureOf(index: ModelIndex, id: string): Exposure | undefined 
   if ((index.incoming.get(id) ?? []).some((e) => e.kind === 'routes-to')) consider('public');
   return best;
 }
+
+export interface BackRef {
+  /** Entity that mentions this one. */
+  from: string;
+  /** Field that holds the reference, e.g. `scope` or `refs`. */
+  field: string;
+}
+
+/** Non-edge references: policy scope, procedure applies_to, history and question refs. */
+export function backRefs(model: SystemModel): Map<string, BackRef[]> {
+  const out = new Map<string, BackRef[]>();
+  const add = (from: string, field: string, ids: string[] | undefined) => {
+    for (const id of ids ?? []) push(out, id, { from, field });
+  };
+  for (const p of model.policies) add(p.id, 'scope', p.scope);
+  for (const p of model.procedures) add(p.id, 'applies_to', p.applies_to);
+  for (const h of model.history) add(h.id, 'refs', h.refs);
+  for (const q of model.open_questions) add(q.id, 'refs', q.refs);
+  return out;
+}
+
+/** The node an entity lives on, then that node's ancestors (closest first). */
+export function hostChain(index: ModelIndex, id: string): string[] {
+  const ref = index.byId.get(id);
+  let cur: string | undefined;
+  if (ref?.section === 'nodes') cur = id;
+  else if (ref?.section === 'services') cur = (ref.entity as SystemModel['services'][number]).node;
+  else if (ref?.section === 'jobs') cur = (ref.entity as SystemModel['jobs'][number]).node;
+  const chain: string[] = [];
+  while (cur && !chain.includes(cur) && index.byId.get(cur)?.section === 'nodes') {
+    chain.push(cur);
+    cur = (index.byId.get(cur)!.entity as SystemModel['nodes'][number]).parent;
+  }
+  return chain;
+}
+
+/** DNS records for a hostname: exact matches, else a matching `*.` wildcard (DNS semantics). */
+export function dnsRecordsFor(model: SystemModel, host: string) {
+  type Rec = NonNullable<SystemModel['zones'][number]['records']>[number];
+  const exact: { zone: string; record: Rec }[] = [];
+  const wildcard: { zone: string; record: Rec }[] = [];
+  const h = host.toLowerCase();
+  for (const z of model.zones) {
+    for (const r of z.records ?? []) {
+      const name = r.name.toLowerCase();
+      if (name === h) exact.push({ zone: z.id, record: r });
+      else if (name.startsWith('*.') && h.endsWith(name.slice(1))) {
+        wildcard.push({ zone: z.id, record: r });
+      }
+    }
+  }
+  return exact.length > 0 ? exact : wildcard;
+}

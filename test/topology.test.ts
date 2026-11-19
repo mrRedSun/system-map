@@ -118,3 +118,14 @@ describe('exposure', () => {
     expect(exposureOf(index, 'pve')).toBeUndefined();
   });
 });
+
+describe('dnsRecordsFor', () => {
+  it('prefers exact records over wildcards', async () => {
+    const { dnsRecordsFor } = await import('../src/web/lib/model-index.js');
+    expect(dnsRecordsFor(examples, 'vpn.example.net').map((r) => r.record.type)).toEqual(['A']);
+    expect(dnsRecordsFor(examples, 'wiki.example.net').map((r) => r.record.name)).toEqual([
+      '*.example.net',
+    ]);
+    expect(dnsRecordsFor(examples, 'example.org')).toEqual([]);
+  });
+});

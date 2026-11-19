@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { buildModel } from '../src/server/model/build.js';
 import { DEFAULT_APPS_OPTIONS, buildApps } from '../src/web/graph/apps.js';
-import { layoutApps, layoutTopology, packBoxes, toElkAppsGraph } from '../src/web/graph/layout.js';
+import {
+  APP_SIZE,
+  cardSize,
+  layoutApps,
+  layoutTopology,
+  packBoxes,
+  stackMinWidth,
+  toElkAppsGraph,
+} from '../src/web/graph/layout.js';
 import { DEFAULT_EDGE_KINDS, buildTopology } from '../src/web/graph/topology.js';
 import { indexModel } from '../src/web/lib/model-index.js';
 import { exampleFiles } from './helpers.js';
@@ -84,6 +92,24 @@ describe('apps layout', () => {
   });
 });
 
+describe('cardSize', () => {
+  const app = { kind: 'app' as const, public: [], dimmed: false, host: 'CT 101' };
+  it('widens cards for long names, within bounds', () => {
+    expect(cardSize({ ...app, label: 'Sonarr' }).width).toBe(APP_SIZE.app.width);
+    const long = cardSize({ ...app, label: 'Immich machine learning' }).width;
+    expect(long).toBeGreaterThan(APP_SIZE.app.width);
+    expect(cardSize({ ...app, label: 'x'.repeat(80) }).width).toBe(300);
+    // Room for the status badge next to the host.
+    expect(cardSize({ ...app, label: 'Gateway', dimmed: true }).width).toBeGreaterThan(
+      cardSize({ ...app, label: 'Gateway' }).width,
+    );
+  });
+
+  it('gives stack boxes room for their title', () => {
+    expect(stackMinWidth('Platform & monitoring')).toBeGreaterThan(stackMinWidth('Media'));
+  });
+});
+
 describe('packBoxes', () => {
   const sizes = [
     { id: 'a', width: 400, height: 300 },
@@ -101,6 +127,31 @@ describe('packBoxes', () => {
     const tall = packBoxes(sizes, 0.3, 0);
     expect(tall.width).toBe(400);
     expect(tall.positions.get('a')!.y).toBeLessThan(tall.positions.get('d')!.y);
+  });
+
+  it('packs boxes of mixed heights densely', () => {
+    // A tall box and four short ones: the short ones fill the space beside the tall one.
+    const mixed = [
+      { id: 'tall', width: 300, height: 400 },
+      ...['a', 'b', 'c', 'd'].map((id) => ({ id, width: 300, height: 90 })),
+    ];
+    const p = packBoxes(mixed, 1.5, 10);
+    expect(p.height).toBeLessThanOrEqual(400);
+    const ids = [...p.positions.keys()];
+    for (const [i, a] of ids.entries()) {
+      for (const b of ids.slice(i + 1)) {
+        const pa = p.positions.get(a)!;
+        const pb = p.positions.get(b)!;
+        const sa = mixed.find((m) => m.id === a)!;
+        const sb = mixed.find((m) => m.id === b)!;
+        const apart =
+          pa.x + sa.width <= pb.x ||
+          pb.x + sb.width <= pa.x ||
+          pa.y + sa.height <= pb.y ||
+          pb.y + sb.height <= pa.y;
+        expect(apart, `${a} / ${b}`).toBe(true);
+      }
+    }
   });
 
   it('stacks everything in one column on request', () => {

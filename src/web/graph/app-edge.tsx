@@ -1,12 +1,5 @@
-import {
-  BaseEdge,
-  EdgeLabelRenderer,
-  getBezierPath,
-  Position,
-  type Edge,
-  type EdgeProps,
-} from '@xyflow/react';
-import { bezierAt } from './edge-labels';
+import { BaseEdge, EdgeLabelRenderer, type Edge, type EdgeProps } from '@xyflow/react';
+import { bezierAt, edgePath, type Side } from './edge-labels';
 
 export interface AppEdgeData extends Record<string, unknown> {
   label?: string;
@@ -16,21 +9,28 @@ export interface AppEdgeData extends Record<string, unknown> {
 
 export type AppFlowEdge = Edge<AppEdgeData, 'app'>;
 
-/** Default bezier edge whose label sits at a chosen spot, computed from the live path. */
+/** Bezier edge (`edgePath`) whose label sits at a chosen spot, computed from the live path. */
 export function AppEdge(props: EdgeProps<AppFlowEdge>) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data } = props;
-  const [path] = getBezierPath({
+  const path = edgePath(
     sourceX,
     sourceY,
-    sourcePosition,
     targetX,
     targetY,
-    targetPosition,
-  });
-  const vertical = sourcePosition === Position.Bottom;
+    sourcePosition as Side,
+    targetPosition as Side,
+  );
   const at =
     data?.label && data.labelAt !== undefined
-      ? bezierAt(sourceX, sourceY, targetX, targetY, vertical, data.labelAt)
+      ? bezierAt(
+          sourceX,
+          sourceY,
+          targetX,
+          targetY,
+          sourcePosition as Side,
+          targetPosition as Side,
+          data.labelAt,
+        )
       : undefined;
   return (
     <>

@@ -1,15 +1,52 @@
 import { describe, expect, it } from 'vitest';
-import { bezierAt, labelSize, placeLabels, type Rect } from '../src/web/graph/edge-labels.js';
+import {
+  bezierAt,
+  edgePath,
+  edgeSides,
+  labelSize,
+  placeLabels,
+  type Rect,
+} from '../src/web/graph/edge-labels.js';
 
 const box = (x: number, y: number, width = 100, height = 40): Rect => ({ x, y, width, height });
 
 describe('edge labels', () => {
   it('follows the bezier: ends at the handles, middle between them', () => {
-    expect(bezierAt(0, 0, 200, 100, false, 0)).toEqual({ x: 0, y: 0 });
-    expect(bezierAt(0, 0, 200, 100, false, 1)).toEqual({ x: 200, y: 100 });
-    expect(bezierAt(0, 0, 200, 100, false, 0.5)).toEqual({ x: 100, y: 50 });
-    // Backwards edges bow outwards instead of crossing straight back.
-    expect(bezierAt(200, 0, 0, 0, false, 0.25).x).toBeGreaterThan(150);
+    expect(bezierAt(0, 0, 200, 100, 'right', 'left', 0)).toEqual({ x: 0, y: 0 });
+    expect(bezierAt(0, 0, 200, 100, 'right', 'left', 1)).toEqual({ x: 200, y: 100 });
+    expect(bezierAt(0, 0, 200, 100, 'right', 'left', 0.5)).toEqual({ x: 100, y: 50 });
+    // Out of a right side towards something on the left: it bows out to the right first.
+    expect(bezierAt(200, 0, 0, 0, 'right', 'left', 0.25).x).toBeGreaterThan(150);
+    // Right side to right side: a C on the right.
+    expect(bezierAt(100, 0, 100, 200, 'right', 'right', 0.5).x).toBeGreaterThan(100);
+  });
+
+  it("draws facing sides exactly like React Flow's bezier edge", async () => {
+    const { getBezierPath, Position } = await import('@xyflow/system');
+    for (const [sx, sy, tx, ty] of [
+      [0, 0, 200, 100],
+      [200, 0, 0, 80],
+    ] as const) {
+      const [rf] = getBezierPath({
+        sourceX: sx,
+        sourceY: sy,
+        sourcePosition: Position.Right,
+        targetX: tx,
+        targetY: ty,
+        targetPosition: Position.Left,
+      });
+      expect(edgePath(sx, sy, tx, ty, 'right', 'left')).toBe(rf);
+    }
+  });
+
+  it('connects the sides that face each other', () => {
+    const a = box(0, 0);
+    expect(edgeSides(a, box(300, 200), false)).toEqual({ source: 'right', target: 'left' });
+    expect(edgeSides(box(300, 200), a, false)).toEqual({ source: 'left', target: 'right' });
+    // Same column: around the right, not across the source.
+    expect(edgeSides(a, box(20, 300), false)).toEqual({ source: 'right', target: 'right' });
+    expect(edgeSides(a, box(0, 300), true)).toEqual({ source: 'bottom', target: 'top' });
+    expect(edgeSides(box(0, 300), a, true)).toEqual({ source: 'top', target: 'bottom' });
   });
 
   it('puts a lone label in the middle', () => {

@@ -3,7 +3,6 @@ import { buildModel } from '../src/server/model/build.js';
 import {
   DEFAULT_APPS_OPTIONS,
   OTHER_STACK,
-  OUTSIDE,
   buildApps,
   edgeLabel,
   stackGroupOf,
@@ -50,22 +49,30 @@ describe('apps graph', () => {
     expect(g.items.some((i) => i.id === 'vm-docker' || i.id === 'pve')).toBe(false);
     // Stacks follow `order`; apps without a stack go to Other, last.
     const stacks = g.items.filter((i) => i.kind === 'stack').map((i) => i.id);
-    expect(stacks).toEqual([
-      'edge',
-      'media',
-      'home',
-      'apps',
-      'bots',
-      'observability',
-      OTHER_STACK,
-      OUTSIDE,
-    ]);
+    expect(stacks).toEqual(['edge', 'media', 'home', 'apps', 'bots', 'observability', OTHER_STACK]);
     expect(g.items.find((i) => i.id === 'proxmox-ui')?.parent).toBe(OTHER_STACK);
   });
 
   it('draws calls between apps, caller to callee', () => {
     const e = edge(apps(), 'sonarr', 'prowlarr');
     expect(e).toMatchObject({ kind: 'use', count: 1, labels: ['Indexer search'], via: [] });
+  });
+
+  it('labels a call by purpose, else protocol, else port', () => {
+    const m = model(yaml`
+      version: 1
+      nodes: [{ id: n, kind: vm }]
+      services:
+        - id: a
+          name: A
+          node: n
+          kind: native
+          calls: [{ target: b, port: 9696 }, { target: c, via: mqtt, port: 1883 }, { target: d }]
+        - { id: b, name: B, node: n, kind: native }
+        - { id: c, name: C, node: n, kind: native }
+        - { id: d, name: D, node: n, kind: native }
+    `);
+    expect(apps({}, m).edges.map((e) => e.labels)).toEqual([[':9696'], ['mqtt'], []]);
   });
 
   it('merges duplicate caller → callee pairs into one edge with a count', () => {
@@ -95,14 +102,31 @@ describe('apps graph', () => {
     expect(edge(g, 'frigate', 'cam-door')).toBeDefined();
   });
 
-  it('puts devices and externals in the one stack that calls them, else in Outside', () => {
+  it('puts devices and externals in the stack that calls them most', () => {
     const g = apps();
     const parent = (id: string) => g.items.find((i) => i.id === id)?.parent;
     expect(parent('cam-door')).toBe('home');
     expect(parent(externalKey('TMDB API'))).toBe('media');
-    // Called from observability (Uptime Kuma) and bots (Notify bot).
-    expect(parent(externalKey('Telegram Bot API'))).toBe(OUTSIDE);
-    expect(g.items.find((i) => i.id === OUTSIDE)).toMatchObject({ kind: 'stack', childCount: 1 });
+    // One call each from observability and bots: the earlier stack (bots) wins the tie.
+    expect(parent(externalKey('Telegram Bot API'))).toBe('bots');
+    expect(edge(g, 'uptime-kuma', externalKey('Telegram Bot API'))).toBeDefined();
+    const busiest = buildModel([
+      {
+        name: 'a.yaml',
+        text: yaml`
+          version: 1
+          nodes: [{ id: n, kind: vm }]
+          stacks: [{ id: one, order: 1 }, { id: two, order: 2 }]
+          services:
+            - { id: a, name: A, node: n, kind: native, stack: one, calls: [{ target: Chat API }] }
+            - { id: b, name: B, node: n, kind: native, stack: two, calls: [{ target: chat api }] }
+            - { id: c, name: C, node: n, kind: native, stack: two, calls: [{ target: Chat API }] }
+        `,
+      },
+    ]).model;
+    const b = apps({}, busiest);
+    expect(b.items.find((i) => i.id === externalKey('Chat API'))?.parent).toBe('two');
+    expect(b.items.find((i) => i.id === 'two')?.childCount).toBe(2);
     // Without stacks there are no groups at all.
     const flat = buildModel([
       {
@@ -170,10 +194,9 @@ describe('apps graph', () => {
     // Calls inside the stack disappear, with the externals only the stack calls.
     expect(g.edges.some((e) => e.source === 'media' && e.target === 'media')).toBe(false);
     expect(g.items.some((i) => i.id === externalKey('TMDB API'))).toBe(false);
-    // Collapsing Outside merges its shared items the same way.
-    const out = apps({ collapsed: new Set([OUTSIDE]) });
-    expect(edge(out, 'notify-bot', OUTSIDE)).toMatchObject({ count: 1 });
-    expect(out.items.some((i) => i.parent === OUTSIDE)).toBe(false);
+    // A shared external inside a collapsed stack: other stacks' calls go to the stack.
+    const bots = apps({ collapsed: new Set(['bots']) });
+    expect(edge(bots, 'uptime-kuma', 'bots')).toMatchObject({ count: 1 });
   });
 
   it('hides retired apps and apps on retired nodes unless asked', () => {
@@ -272,12 +295,16 @@ describe('apps graph', () => {
 
 describe('helpers', () => {
   it('labels edges with purposes, count and route hostname', () => {
+    const long = 'Library refresh after every import, with retries and backoff';
     const base = { id: 'x', kind: 'use' as const, source: 'a', target: 'b' };
     expect(edgeLabel({ ...base, count: 1, labels: ['Search'], via: [] })).toBe('Search');
     expect(edgeLabel({ ...base, count: 2, labels: ['A', 'B'], via: [] })).toBe('A, B ×2');
     expect(edgeLabel({ ...base, count: 3, labels: ['A', 'B', 'C'], via: [] })).toBe('A, B +1 ×3');
     expect(edgeLabel({ ...base, count: 1, labels: [], via: ['h.example.net'] })).toBe(
       'via h.example.net',
+    );
+    expect(edgeLabel({ ...base, count: 1, labels: [long], via: [] })).toBe(
+      'Library refresh after every import…',
     );
   });
 

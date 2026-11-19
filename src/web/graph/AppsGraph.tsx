@@ -28,7 +28,7 @@ import { useNarrow } from '@/lib/media';
 import { usePersisted } from '@/lib/persisted';
 import { iconFor, kindLabel } from '@/lib/visuals';
 import { AppEdge, type AppFlowEdge } from './app-edge';
-import { placeLabels, type Rect } from './edge-labels';
+import { edgeSides, labelSize, placeLabels, type Rect } from './edge-labels';
 import { AppNode, SmallNode, StackNode, type AppGraphNode, type PortInfo } from './app-nodes';
 import {
   DEFAULT_APPS_OPTIONS,
@@ -41,7 +41,7 @@ import {
   type AppsGraph as Graph,
 } from './apps';
 import type { GraphViewProps } from './GraphView';
-import { layoutApps, type Box } from './layout';
+import { LAYER_GAP, layoutApps, type Box } from './layout';
 import { LineSwatch, ModeSwitch, SwatchToggle, ToolbarDivider } from './toolbar';
 import { useTweenedNodes } from './use-tween';
 
@@ -150,12 +150,23 @@ export function AppsGraph({
   }, [toggleFocus]);
 
   const container = useRef<HTMLDivElement>(null);
+  const toolbar = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<{ graph: Graph; boxes: Map<string, Box> }>();
   useEffect(() => {
     let cancelled = false;
     const el = container.current;
-    const aspect = el && el.clientHeight > 0 ? el.clientWidth / el.clientHeight : 1.6;
-    layoutApps(graph, vertical ? 'DOWN' : 'RIGHT', aspect, graph !== full)
+    // Shape of the area the graph is fitted into: below the toolbar, inside the padding.
+    const usableHeight = el ? el.clientHeight - (toolbar.current?.offsetHeight ?? 40) - 36 : 0;
+    const aspect = el && usableHeight > 0 ? (el.clientWidth - 32) / usableHeight : 1.6;
+    // Focus: room between layers for the widest edge label.
+    const gap =
+      graph === full
+        ? LAYER_GAP
+        : Math.min(
+            320,
+            Math.max(150, ...graph.edges.map((e) => labelSize(edgeLabel(e)).width + 48)),
+          );
+    layoutApps(graph, vertical ? 'DOWN' : 'RIGHT', aspect, gap)
       .then((boxes) => {
         if (!cancelled) setLayout({ graph, boxes });
       })
@@ -220,7 +231,6 @@ export function AppsGraph({
           ports,
           status: ref ? statusOf(ref.entity) : undefined,
           dimmed: item.dimmed,
-          vertical,
           selected: item.id === highlight || item.id === selected,
           faded: near !== undefined && !near.has(item.id) && !item.expanded,
           health: item.entity && item.kind !== 'stack' ? healthOf?.(item.entity) : undefined,
@@ -233,7 +243,7 @@ export function AppsGraph({
         },
       };
     });
-  }, [layout, index, highlight, selected, near, healthOf, toggle, open, vertical]);
+  }, [layout, index, highlight, selected, near, healthOf, toggle, open]);
 
   const edges = useMemo<AppFlowEdge[]>(() => {
     if (!layout) return [];
@@ -274,11 +284,16 @@ export function AppsGraph({
       const faded = highlight !== undefined && !active;
       const cross = byId.get(e.source)?.parent !== byId.get(e.target)?.parent;
       const base = cross ? Math.min(style.opacity, CROSS_STACK_OPACITY) : style.opacity;
+      const from = rectOf(e.source);
+      const to = rectOf(e.target);
+      const sides = from && to ? edgeSides(from, to, vertical) : undefined;
       return {
         id: e.id,
         type: 'app' as const,
         source: e.source,
         target: e.target,
+        sourceHandle: sides && `s-${sides.source}`,
+        targetHandle: sides && `t-${sides.target}`,
         data: { label: edgeLabel(e), labelAt: spots.get(e.id) },
         markerEnd: { type: MarkerType.ArrowClosed, color: style.color, width: 14, height: 14 },
         style: {
@@ -299,7 +314,6 @@ export function AppsGraph({
   // When everything would be too small to read (phones, very large maps), start at the
   // top-left corner at a readable zoom instead.
   const fitted = useRef(false);
-  const toolbar = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!layout) return;
     const id = fitTarget;

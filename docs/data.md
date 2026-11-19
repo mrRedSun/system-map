@@ -59,13 +59,17 @@ services:
 
 - `stacks[]`: `id`, `name` (box label, default the id), `color` (one of `gray`, `red`, `orange`,
   `amber`, `lime`, `green`, `teal`, `cyan`, `blue`, `indigo`, `violet`, `pink`; default: picked in
-  turn), `order` (lower first; unset ones follow in file order). Boxes are packed in this order,
-  left to right, then down.
+  turn), `order` (lower first; unset ones follow in file order). Boxes are placed in this order,
+  left to right, then down; a small box may move up into a gap beside a taller one.
 - `services[].stack`: a stack id. Services without one, or with an unknown one (an error), go in
   **Other**.
 - `services[].calls[].kind`: `use` (default) or `observe`. Use `observe` for dashboards, monitors
   and the like that read another app; those edges are drawn faint and ignored by the layout, so a
   dashboard calling ten apps does not pull them into one column.
+- A device or free-text target is drawn inside the stack that calls it most (on a tie, the
+  earlier stack).
+- A call's edge label is its `purpose`, else `via`, else `:port`. Fill `purpose` where it helps:
+  calls with none of the three have no label.
 - Free-text call targets that differ only in case or spacing (`Telegram API`, `telegram api`) are
   one external card.
 

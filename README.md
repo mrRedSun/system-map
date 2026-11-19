@@ -97,7 +97,7 @@ Open http://localhost:5173. Edit a file in `examples/` and the page updates.
 ```sh
 npm run typecheck
 npm run lint         # ESLint + Prettier
-npm test             # Vitest: schema, merge, references, store, HTTP
+npm test             # Vitest: schema, merge, references, store, HTTP, topology, layout
 npm run schema:check # fails if schema/system-map.schema.json is stale (fix: npm run schema)
 npm run build        # dist/public (SPA) + dist/server.mjs (bundled server)
 ```

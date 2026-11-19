@@ -34,6 +34,9 @@ export const SECTION_KIND = {
 
 export type EntityKind = (typeof SECTION_KIND)[SectionKey];
 
+/** Section names in display order. Kept here (not in schema.ts) so the client does not bundle zod. */
+export const SECTIONS = Object.keys(SECTION_KIND) as SectionKey[];
+
 export const EDGE_KINDS = [
   'contains',
   'runs-on',

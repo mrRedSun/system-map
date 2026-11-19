@@ -113,7 +113,10 @@ export interface MonitorHealth {
   status: HealthStatus;
   name: string;
   msg?: string;
+  /** Last response time in ms. */
   ping?: number;
+  /** Uptime ratio (0 to 1) per window, e.g. `{ "1d": 0.998 }` (Kuma 2.x). */
+  uptime?: Record<string, number>;
 }
 
 /**

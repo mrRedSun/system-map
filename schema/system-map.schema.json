@@ -915,6 +915,11 @@
               "none"
             ]
           },
+          "stack": {
+            "description": "Stack id (`stacks[].id`), groups apps in the graph",
+            "type": "string",
+            "minLength": 1
+          },
           "calls": {
             "type": "array",
             "items": {
@@ -943,6 +948,14 @@
                 },
                 "purpose": {
                   "type": "string"
+                },
+                "kind": {
+                  "description": "use (default) or observe: a dashboard or monitor reading the target; drawn faint and ignored for layout",
+                  "type": "string",
+                  "enum": [
+                    "use",
+                    "observe"
+                  ]
                 }
               },
               "required": [
@@ -1056,6 +1069,81 @@
           "name",
           "node",
           "kind"
+        ],
+        "additionalProperties": {}
+      }
+    },
+    "stacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Markdown"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "color": {
+            "description": "Tint of the group box",
+            "type": "string",
+            "enum": [
+              "gray",
+              "red",
+              "orange",
+              "amber",
+              "lime",
+              "green",
+              "teal",
+              "cyan",
+              "blue",
+              "indigo",
+              "violet",
+              "pink"
+            ]
+          },
+          "order": {
+            "description": "Sort key for stacks; lower first, then file order",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "id"
         ],
         "additionalProperties": {}
       }

@@ -12,6 +12,7 @@ import type {
   Route,
   SectionKey,
   Service,
+  Stack,
   SystemNode,
   Zone,
 } from './schema.js';
@@ -24,6 +25,7 @@ export const SECTION_KIND = {
   networks: 'network',
   nodes: 'node',
   services: 'service',
+  stacks: 'stack',
   routes: 'route',
   monitors: 'monitor',
   jobs: 'job',
@@ -36,6 +38,22 @@ export type EntityKind = (typeof SECTION_KIND)[SectionKey];
 
 /** Section names in display order. Kept here (not in schema.ts) so the client does not bundle zod. */
 export const SECTIONS = Object.keys(SECTION_KIND) as SectionKey[];
+
+/** Named tints for stack group boxes; the app maps them to theme-aware colors. */
+export const STACK_COLORS = [
+  'gray',
+  'red',
+  'orange',
+  'amber',
+  'lime',
+  'green',
+  'teal',
+  'cyan',
+  'blue',
+  'indigo',
+  'violet',
+  'pink',
+] as const;
 
 export const EDGE_KINDS = [
   'contains',
@@ -87,6 +105,7 @@ export interface SystemModel {
   networks: Network[];
   nodes: SystemNode[];
   services: Service[];
+  stacks: Stack[];
   routes: Route[];
   monitors: Monitor[];
   jobs: Job[];

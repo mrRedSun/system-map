@@ -155,6 +155,29 @@ nodes:
     autostart: false
     notes: Kept for experiments; start manually.
     backup: { included: false }
+  - id: ct-home
+    kind: lxc
+    name: home
+    parent: pve
+    vmid: 140
+    status: running
+    os: Debian 13
+    ips: [10.10.0.40]
+    network: lan
+    resources: { cores: 2, memory_mib: 3072, disk_gib: 24 }
+    devices:
+      - { source: /dev/ttyUSB0, target: /dev/ttyUSB0, purpose: Zigbee coordinator }
+    backup: { included: true, job: nightly-guests }
+  - id: cam-door
+    kind: device
+    name: Door camera
+    network: lan
+    ips: [10.10.0.61]
+  - id: cam-garden
+    kind: device
+    name: Garden camera
+    network: lan
+    ips: [10.10.0.62]
   - id: phone
     kind: device
     name: Owner phone

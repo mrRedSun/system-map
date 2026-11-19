@@ -118,6 +118,7 @@ export function backRefs(model: SystemModel): Map<string, BackRef[]> {
   for (const p of model.procedures) add(p.id, 'applies_to', p.applies_to);
   for (const h of model.history) add(h.id, 'refs', h.refs);
   for (const q of model.open_questions) add(q.id, 'refs', q.refs);
+  for (const s of model.services) if (s.stack) add(s.id, 'stack', [s.stack]);
   return out;
 }
 

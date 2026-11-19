@@ -6,6 +6,7 @@
  * - `strict`: unknown keys fail. Used only to report unknown keys as warnings.
  */
 import { z } from 'zod';
+import { STACK_COLORS } from './model.js';
 
 export const ID_PATTERN = '^[a-z0-9]+(?:-[a-z0-9]+)*$';
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -41,6 +42,8 @@ export const EXPOSURES = ['internal', 'lan', 'restricted', 'public'] as const;
 export const SERVICE_AUTH = ['authelia', 'own', 'token', 'oidc', 'mtls', 'key', 'none'] as const;
 export const ROUTE_VIA = ['traefik', 'cloudflare-worker', 'router-forward', 'plex'] as const;
 export const ROUTE_AUTH = ['authelia', 'none', 'app', 'key'] as const;
+/** `observe`: dashboards and monitors reading another app; drawn faint in the Apps graph. */
+export const CALL_KINDS = ['use', 'observe'] as const;
 
 export type SchemaMode = 'strict' | 'loose';
 
@@ -246,6 +249,9 @@ export function buildSchemas(mode: SchemaMode) {
       .array(obj({ label: str.optional(), url: httpUrl, internal: z.boolean().optional() }))
       .optional(),
     auth: z.enum(SERVICE_AUTH).optional(),
+    stack: ref
+      .optional()
+      .meta({ description: 'Stack id (`stacks[].id`), groups apps in the graph' }),
     calls: z
       .array(
         obj({
@@ -253,6 +259,10 @@ export function buildSchemas(mode: SchemaMode) {
           via: str.optional(),
           port: portSpec.optional(),
           purpose: str.optional(),
+          kind: z.enum(CALL_KINDS).optional().meta({
+            description:
+              'use (default) or observe: a dashboard or monitor reading the target; drawn faint and ignored for layout',
+          }),
         }),
       )
       .optional(),
@@ -268,6 +278,15 @@ export function buildSchemas(mode: SchemaMode) {
     schedule: str.optional(),
     backup: obj({ how: str.optional(), where: str.optional() }).optional(),
     update: obj({ command: str.optional(), notes: md.optional() }).optional(),
+  });
+
+  const stack = obj({
+    ...base,
+    color: z.enum(STACK_COLORS).optional().meta({ description: 'Tint of the group box' }),
+    order: z
+      .int()
+      .optional()
+      .meta({ description: 'Sort key for stacks; lower first, then file order' }),
   });
 
   const route = obj({
@@ -345,6 +364,7 @@ export function buildSchemas(mode: SchemaMode) {
     networks: network,
     nodes: node,
     services: service,
+    stacks: stack,
     routes: route,
     monitors: monitor,
     jobs: job,
@@ -366,6 +386,7 @@ export function buildSchemas(mode: SchemaMode) {
     networks: z.array(network).optional(),
     nodes: z.array(node).optional(),
     services: z.array(service).optional(),
+    stacks: z.array(stack).optional(),
     routes: z.array(route).optional(),
     monitors: z.array(monitor).optional(),
     jobs: z.array(job).optional(),
@@ -391,6 +412,7 @@ export type Zone = z.infer<Sections['zones']>;
 export type Network = z.infer<Sections['networks']>;
 export type SystemNode = z.infer<Sections['nodes']>;
 export type Service = z.infer<Sections['services']>;
+export type Stack = z.infer<Sections['stacks']>;
 export type Route = z.infer<Sections['routes']>;
 export type Monitor = z.infer<Sections['monitors']>;
 export type Job = z.infer<Sections['jobs']>;

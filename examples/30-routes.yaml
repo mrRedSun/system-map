@@ -35,6 +35,18 @@ routes:
     upstream: http://uptime-kuma:3001
     auth: authelia
     middlewares: [authelia@file]
+  - id: route-home
+    host: home.example.net
+    via: traefik
+    target: home-assistant
+    upstream: http://10.10.0.40:8123
+    auth: app
+  - id: route-requests
+    host: requests.example.net
+    via: traefik
+    target: requests
+    upstream: http://10.10.0.20:5055
+    auth: app
   - id: route-vpn
     host: vpn.example.net
     via: router-forward
@@ -51,3 +63,5 @@ monitors:
   - { id: kuma-7, kuma_id: 7, name: Nightly backup, type: push, group: Jobs }
   - { id: kuma-8, kuma_id: 8, name: Proxmox host ping, type: ping, target: 10.10.0.2, node: pve, group: Hosts }
   - { id: kuma-9, kuma_id: 9, name: Media ping, type: ping, target: 10.10.0.20, node: ct-media, group: Hosts }
+  - { id: kuma-10, kuma_id: 10, name: Sonarr, type: http, target: 'http://10.10.0.20:8989/ping', service: sonarr, group: LAN }
+  - { id: kuma-11, kuma_id: 11, name: Home Assistant, type: http, target: 'https://home.example.net/', service: home-assistant, group: Public }

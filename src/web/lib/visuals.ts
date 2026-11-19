@@ -15,6 +15,7 @@ import {
   HelpCircle,
   History,
   Layers,
+  LayoutGrid,
   ListChecks,
   Monitor,
   Network,
@@ -58,6 +59,7 @@ const SERVICE_ICONS: Record<string, LucideIcon> = {
 };
 
 const SECTION_ICONS: Record<string, LucideIcon> = {
+  stacks: LayoutGrid,
   routes: Signpost,
   monitors: Activity,
   backups: Archive,

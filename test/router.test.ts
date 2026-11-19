@@ -21,4 +21,20 @@ describe('hash routes', () => {
     }
     expect(formatHash({ view: 'graph', entity: 'wiki' })).toBe('#/n/wiki');
   });
+
+  it('carries the graph mode for the graph view only', () => {
+    expect(parseHash('#/graph/infra')).toEqual({ view: 'graph', graph: 'infra' });
+    expect(parseHash('#/graph/apps/n/wiki')).toEqual({
+      view: 'graph',
+      graph: 'apps',
+      entity: 'wiki',
+    });
+    expect(parseHash('#/routes/infra')).toEqual({ view: 'routes' });
+    expect(formatHash({ view: 'graph', graph: 'infra', entity: 'wiki' })).toBe(
+      '#/graph/infra/n/wiki',
+    );
+    expect(formatHash({ view: 'routes', graph: 'infra' })).toBe('#/routes');
+    const loc = { view: 'graph' as const, graph: 'apps' as const, entity: 'a b' };
+    expect(parseHash(formatHash(loc))).toEqual(loc);
+  });
 });

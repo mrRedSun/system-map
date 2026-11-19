@@ -20,7 +20,9 @@ import { displayName, exposureOf, statusOf, type ModelIndex } from '@/lib/model-
 import { useNarrow } from '@/lib/media';
 import { usePersisted } from '@/lib/persisted';
 import { GROUP_ICONS, iconFor, kindLabel } from '@/lib/visuals';
+import type { GraphMode } from '@/lib/router';
 import { cn } from '@/lib/utils';
+import { AppsGraph } from './AppsGraph';
 import { EDGE_STYLE } from './edge-style';
 import { layoutTopology, type Box } from './layout';
 import { ContainerNode, EntityNode, type GraphNode } from './nodes';
@@ -35,6 +37,7 @@ import {
   type DrawnEdgeKind,
   type Topology,
 } from './topology';
+import { ModeSwitch, ToolbarDivider } from './toolbar';
 import { useTweenedNodes } from './use-tween';
 
 export interface GraphViewProps {
@@ -43,6 +46,8 @@ export interface GraphViewProps {
   selected?: string;
   onSelect: (id: string | undefined) => void;
   healthOf?: (id: string) => HealthStatus | undefined;
+  mode: GraphMode;
+  onMode: (mode: GraphMode) => void;
 }
 
 const isEdgeKinds = (v: unknown): v is Record<DrawnEdgeKind, boolean> =>
@@ -53,14 +58,16 @@ const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 const NODE_TYPES = { entity: EntityNode, container: ContainerNode };
 
 export function GraphView(props: GraphViewProps) {
+  // Keyed by mode: each mode keeps its own viewport and fits on first layout.
   return (
-    <ReactFlowProvider>
-      <Graph {...props} />
+    <ReactFlowProvider key={props.mode}>
+      {props.mode === 'apps' ? <AppsGraph {...props} /> : <InfraGraph {...props} />}
     </ReactFlowProvider>
   );
 }
 
-function Graph({ model, index, selected, onSelect, healthOf }: GraphViewProps) {
+/** Containment view: host → guests → services, plus routes, monitors and backups. */
+function InfraGraph({ model, index, selected, onSelect, healthOf, mode, onMode }: GraphViewProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => defaultExpanded(model));
   const [edgeKinds, setEdgeKinds] = usePersisted('edge-kinds', DEFAULT_EDGE_KINDS, isEdgeKinds);
   const [showRetired, setShowRetired] = usePersisted('show-retired', false, isBool);
@@ -241,6 +248,8 @@ function Graph({ model, index, selected, onSelect, healthOf }: GraphViewProps) {
         />
         <Panel position="top-left" className="!m-2 max-w-[calc(100%-1rem)]">
           <GraphToolbar
+            mode={mode}
+            onMode={onMode}
             edgeKinds={edgeKinds}
             onEdgeKinds={setEdgeKinds}
             showRetired={showRetired}
@@ -260,6 +269,8 @@ function Graph({ model, index, selected, onSelect, healthOf }: GraphViewProps) {
 }
 
 interface ToolbarProps {
+  mode: GraphMode;
+  onMode: (mode: GraphMode) => void;
   edgeKinds: Record<DrawnEdgeKind, boolean>;
   onEdgeKinds: (v: Record<DrawnEdgeKind, boolean>) => void;
   showRetired: boolean;
@@ -271,6 +282,8 @@ interface ToolbarProps {
 function GraphToolbar(p: ToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-1 rounded-xl border bg-card/90 p-1 shadow-sm backdrop-blur">
+      <ModeSwitch mode={p.mode} onMode={p.onMode} />
+      <ToolbarDivider />
       {DRAWN_EDGE_KINDS.map((kind) => {
         const on = p.edgeKinds[kind];
         const style = EDGE_STYLE[kind];
@@ -303,7 +316,7 @@ function GraphToolbar(p: ToolbarProps) {
           </button>
         );
       })}
-      <span className="mx-0.5 h-5 w-px bg-border" />
+      <ToolbarDivider />
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon-sm" onClick={p.onExpandAll} aria-label="Expand all">

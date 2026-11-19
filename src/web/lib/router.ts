@@ -1,4 +1,5 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useAtomValue } from '@effect/atom-react';
+import { Atom } from 'effect/reactivity';
 
 export const VIEWS = [
   'graph',
@@ -60,16 +61,19 @@ function safeDecode(s: string): string {
   }
 }
 
-const subscribe = (cb: () => void) => {
-  window.addEventListener('hashchange', cb);
-  return () => window.removeEventListener('hashchange', cb);
-};
+/** The current location, following `hashchange`. */
+export const locationAtom = Atom.make((get) => {
+  const onChange = () => get.setSelf(parseHash(window.location.hash));
+  window.addEventListener('hashchange', onChange);
+  get.addFinalizer(() => window.removeEventListener('hashchange', onChange));
+  return parseHash(window.location.hash);
+}).pipe(Atom.keepAlive);
+
+export function navigate(next: Location): void {
+  const target = formatHash(next);
+  if (target !== window.location.hash) window.location.hash = target;
+}
 
 export function useLocation(): [Location, (next: Location) => void] {
-  const hash = useSyncExternalStore(subscribe, () => window.location.hash);
-  const navigate = useCallback((next: Location) => {
-    const target = formatHash(next);
-    if (target !== window.location.hash) window.location.hash = target;
-  }, []);
-  return [parseHash(hash), navigate];
+  return [useAtomValue(locationAtom), navigate];
 }

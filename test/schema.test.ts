@@ -11,7 +11,7 @@ const published = JSON.parse(
 ) as Record<string, unknown>;
 
 describe('published JSON Schema', () => {
-  it('matches the zod schema', () => {
+  it('matches the Effect schema', () => {
     expect(published).toEqual(JSON.parse(JSON.stringify(toJsonSchema())));
   });
 

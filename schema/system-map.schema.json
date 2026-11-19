@@ -3,9 +3,11 @@
   "type": "object",
   "properties": {
     "version": {
-      "description": "Required in at least one file (normally the one with meta)",
       "type": "number",
-      "const": 1
+      "enum": [
+        1
+      ],
+      "description": "Required in at least one file (normally the one with meta)"
     },
     "meta": {
       "type": "object",
@@ -30,11 +32,11 @@
           "type": "string"
         },
         "conventions": {
-          "description": "Markdown: conventions for editing this data",
-          "type": "string"
+          "type": "string",
+          "description": "Markdown: conventions for editing this data"
         }
       },
-      "additionalProperties": {}
+      "additionalProperties": true
     },
     "policies": {
       "type": "array",
@@ -77,7 +79,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "title": {
@@ -109,7 +111,7 @@
           "title",
           "rule"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "procedures": {
@@ -153,7 +155,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "title": {
@@ -177,7 +179,7 @@
           "title",
           "body"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "zones": {
@@ -221,7 +223,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "domain": {
@@ -255,19 +257,22 @@
                 "name",
                 "type"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "settings": {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
             "additionalProperties": {
-              "type": [
-                "string",
-                "number",
-                "boolean"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
               ]
             }
           },
@@ -289,7 +294,7 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "workers": {
@@ -307,7 +312,7 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           }
         },
@@ -315,7 +320,7 @@
           "id",
           "domain"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "networks": {
@@ -359,7 +364,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "cidr": {
@@ -375,9 +380,13 @@
             }
           },
           "dhcp": {
-            "type": [
-              "boolean",
-              "string"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              }
             ]
           },
           "vlan": {
@@ -389,7 +398,7 @@
         "required": [
           "id"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "nodes": {
@@ -433,7 +442,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "kind": {
@@ -513,7 +522,7 @@
                 "type": "string"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "privileged": {
             "type": "boolean"
@@ -553,7 +562,7 @@
                   "description": "Entity id"
                 }
               },
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "devices": {
@@ -571,7 +580,7 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "backup": {
@@ -588,7 +597,7 @@
                 "description": "Markdown"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "firewall": {
             "type": "object",
@@ -641,7 +650,7 @@
                       "type": "string"
                     }
                   },
-                  "additionalProperties": {}
+                  "additionalProperties": true
                 }
               },
               "file": {
@@ -652,7 +661,7 @@
                 "description": "Markdown"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "update": {
             "type": "object",
@@ -668,7 +677,7 @@
                 "description": "Markdown"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "hardware": {
             "type": "object",
@@ -697,17 +706,14 @@
                       "type": "string"
                     }
                   },
-                  "additionalProperties": {}
+                  "additionalProperties": true
                 }
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "paths": {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
             "additionalProperties": {
               "type": "string"
             }
@@ -727,7 +733,7 @@
               "required": [
                 "path"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             },
             "description": "Secret locations only, never values"
           }
@@ -736,7 +742,7 @@
           "id",
           "kind"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "services": {
@@ -780,7 +786,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "node": {
@@ -815,9 +821,13 @@
             "type": "string"
           },
           "version": {
-            "type": [
-              "string",
-              "number"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
             ]
           },
           "pin": {
@@ -878,7 +888,7 @@
               "required": [
                 "port"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "urls": {
@@ -900,7 +910,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "auth": {
@@ -916,9 +926,9 @@
             ]
           },
           "stack": {
-            "description": "Stack id (`stacks[].id`), groups apps in the graph",
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Stack id (`stacks[].id`), groups apps in the graph"
           },
           "calls": {
             "type": "array",
@@ -950,18 +960,18 @@
                   "type": "string"
                 },
                 "kind": {
-                  "description": "use (default) or observe: a dashboard or monitor reading the target; drawn faint and ignored for layout",
                   "type": "string",
                   "enum": [
                     "use",
                     "observe"
-                  ]
+                  ],
+                  "description": "use (default) or observe: a dashboard or monitor reading the target; drawn faint and ignored for layout"
                 }
               },
               "required": [
                 "target"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "health": {
@@ -979,7 +989,7 @@
                 "type": "boolean"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "logs": {
             "type": "object",
@@ -1002,16 +1012,13 @@
                   "host",
                   "container"
                 ],
-                "additionalProperties": {}
+                "additionalProperties": true
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "paths": {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
             "additionalProperties": {
               "type": "string"
             }
@@ -1031,7 +1038,7 @@
               "required": [
                 "path"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             },
             "description": "Secret locations only, never values"
           },
@@ -1048,7 +1055,7 @@
                 "type": "string"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           },
           "update": {
             "type": "object",
@@ -1061,7 +1068,7 @@
                 "description": "Markdown"
               }
             },
-            "additionalProperties": {}
+            "additionalProperties": true
           }
         },
         "required": [
@@ -1070,7 +1077,7 @@
           "node",
           "kind"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "stacks": {
@@ -1114,11 +1121,10 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "color": {
-            "description": "Tint of the group box",
             "type": "string",
             "enum": [
               "gray",
@@ -1133,19 +1139,20 @@
               "indigo",
               "violet",
               "pink"
-            ]
+            ],
+            "description": "Tint of the group box"
           },
           "order": {
-            "description": "Sort key for stacks; lower first, then file order",
             "type": "integer",
             "minimum": -9007199254740991,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "description": "Sort key for stacks; lower first, then file order"
           }
         },
         "required": [
           "id"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "routes": {
@@ -1189,7 +1196,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "host": {
@@ -1197,11 +1204,11 @@
             "minLength": 1
           },
           "paths": {
-            "description": "Path prefixes or Traefik rule strings, e.g. HostRegexp(...)",
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Path prefixes or Traefik rule strings, e.g. HostRegexp(...)"
           },
           "via": {
             "type": "string",
@@ -1242,7 +1249,7 @@
           "via",
           "target"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "monitors": {
@@ -1286,7 +1293,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "kuma_id": {
@@ -1306,16 +1313,16 @@
             "description": "Entity id"
           },
           "node": {
-            "description": "Node id, for host ping monitors (instead of service)",
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Node id, for host ping monitors (instead of service)"
           },
           "group": {
             "type": "string"
           },
           "active": {
-            "description": "Defaults to true",
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Defaults to true"
           },
           "interval_s": {
             "type": "integer",
@@ -1328,13 +1335,17 @@
           "name",
           "kuma_id"
         ],
-        "additionalProperties": {},
-        "not": {
-          "required": [
-            "service",
-            "node"
-          ]
-        }
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "not": {
+              "required": [
+                "service",
+                "node"
+              ]
+            }
+          }
+        ]
       }
     },
     "jobs": {
@@ -1378,7 +1389,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "node": {
@@ -1400,9 +1411,13 @@
             "type": "string"
           },
           "notifies": {
-            "type": [
-              "boolean",
-              "string"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              }
             ]
           }
         },
@@ -1411,7 +1426,7 @@
           "node",
           "schedule"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "backups": {
@@ -1455,7 +1470,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "what": {
@@ -1496,7 +1511,7 @@
           "what",
           "to"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "history": {
@@ -1540,7 +1555,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "date": {
@@ -1572,7 +1587,7 @@
           "date",
           "title"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     },
     "open_questions": {
@@ -1616,7 +1631,7 @@
               "required": [
                 "url"
               ],
-              "additionalProperties": {}
+              "additionalProperties": true
             }
           },
           "question": {
@@ -1636,11 +1651,11 @@
           "id",
           "question"
         ],
-        "additionalProperties": {}
+        "additionalProperties": true
       }
     }
   },
-  "additionalProperties": {},
+  "additionalProperties": true,
   "$id": "https://github.com/mrRedSun/system-map/blob/main/schema/system-map.schema.json",
   "title": "System Map data file (v1)"
 }

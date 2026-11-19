@@ -1,6 +1,7 @@
 import { AlertTriangle, Menu, Moon, Search, Sun, WifiOff } from 'lucide-react';
+import { useAtom, useAtomValue } from '@effect/atom-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { SystemModel } from '../shared/model';
+import type { SystemModel, WhoAmI } from '../shared/model';
 import { AppContext, type AppContextValue } from '@/app-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,18 +14,12 @@ import {
 import { Kbd } from '@/components/ui/kbd';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { GraphView } from '@/graph/GraphView';
-import { useModel, useWhoAmI } from '@/lib/api';
+import { modelAtom, modelStateOf, whoAmIAtom } from '@/lib/api';
 import { backRefs, indexModel } from '@/lib/model-index';
-import { usePersisted } from '@/lib/persisted';
-import {
-  VIEWS,
-  formatHash,
-  isGraphMode,
-  useLocation,
-  type GraphMode,
-  type View,
-} from '@/lib/router';
-import { useEntityHealth, useHealth } from '@/lib/health';
+import { graphModeAtom } from '@/lib/prefs';
+import { AsyncResult } from 'effect/reactivity';
+import { VIEWS, formatHash, useLocation, type GraphMode, type View } from '@/lib/router';
+import { healthAtom, healthStateOf, useEntityHealth } from '@/lib/health';
 import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 import { BASE_TABS, DetailPanel, type PanelTab } from '@/panel/DetailPanel';
@@ -55,18 +50,18 @@ const PAGES: Record<Exclude<View, 'graph'>, () => React.ReactNode> = {
 };
 
 export function App() {
-  const { model, error, connection } = useModel();
-  const me = useWhoAmI();
+  const { model, error, connection } = modelStateOf(useAtomValue(modelAtom));
+  const me: WhoAmI = AsyncResult.getOrElse(useAtomValue(whoAmIAtom), (): WhoAmI => ({}));
   const { dark, toggle } = useTheme();
   const [location, navigate] = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
   useCommandShortcut(setSearchOpen);
-  const health = useHealth();
+  const health = healthStateOf(useAtomValue(healthAtom));
   const index = useMemo(() => (model ? indexModel(model) : undefined), [model]);
   const statuses = useEntityHealth(model, index, health);
 
   // Graph mode: the URL wins and is remembered; otherwise the saved preference (Apps by default).
-  const [savedMode, setSavedMode] = usePersisted<GraphMode>('graph-mode', 'apps', isGraphMode);
+  const [savedMode, setSavedMode] = useAtom(graphModeAtom);
   const graphMode = location.graph ?? savedMode;
   useEffect(() => {
     if (location.graph) setSavedMode(location.graph);

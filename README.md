@@ -9,24 +9,35 @@ The app never writes to the data. People and agents edit the YAML; the map reloa
 
 ## Architecture
 
-One container runs a small Node 22 server ([Hono](https://hono.dev)). It serves the built SPA and a
-read-only API.
+One container runs a small Node 22 server written with [Effect](https://effect.website) (v4). It
+serves the built SPA and a read-only API. The front end is React, also on Effect for data and state.
 
 ```
-DATA_DIR/*.yaml ──► loader (parse → merge → validate → references) ──► ModelStore ──► /api/model, /api/events
-Uptime Kuma /metrics ──► health cache (30 s) ──► /api/health
-Dozzle hub ──► log proxy (allowlisted containers only) ──► /api/logs/:host/:container
+DATA_DIR/*.yaml ──► loader (parse → merge → validate → references) ──► DataStore ──► /api/model, /api/events
+Uptime Kuma /metrics ──► Health (on-demand cache) ──► /api/health
+Dozzle hub ──► Logs (allowlisted containers only) ──► /api/logs/:host/:container
 ```
 
-| Path                  | What it holds                                                           |
-| --------------------- | ----------------------------------------------------------------------- |
-| `src/shared/`         | zod schema (the data contract) and API types, used by server and client |
-| `src/server/model/`   | YAML loader: parse, merge, validate, reference checks, derived edges    |
-| `src/server/store.ts` | Reads `DATA_DIR`, watches it, keeps the last good model                 |
-| `src/server/app.ts`   | HTTP routes, security headers, static SPA                               |
-| `src/web/`            | Vite + React + Tailwind + shadcn/ui front end                           |
-| `schema/`             | Generated JSON Schema for editor validation                             |
-| `examples/`           | Small fictional dataset for development and tests                       |
+| Path                   | What it holds                                                                     |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `src/shared/schema.ts` | Effect `Schema` of the data contract; the source of the types and the JSON Schema |
+| `src/shared/model.ts`  | Schemas of the API payloads (model, health, identity, log events)                 |
+| `src/shared/api.ts`    | The JSON API as an `HttpApi`, implemented by the server and used by the client    |
+| `src/server/model/`    | YAML loader: parse, merge, validate, reference checks, derived edges (pure)       |
+| `src/server/store.ts`  | `DataSource` (reads and watches `DATA_DIR`) and `DataStore` (last good model)     |
+| `src/server/kuma.ts`   | `Health`: Uptime Kuma metrics, cached                                             |
+| `src/server/dozzle.ts` | `Logs`: Dozzle log proxy as an Effect `Stream`, with the stream limits            |
+| `src/server/http.ts`   | Routes, security headers, SSE, static SPA                                         |
+| `src/server/main.ts`   | Layer wiring and graceful shutdown                                                |
+| `src/web/lib/`         | Typed API client and state as atoms (`effect/reactivity`, `@effect/atom-react`)   |
+| `src/web/graph/`       | Graph transforms (plain functions) and React Flow views                           |
+| `src/web/`             | Vite + React + Tailwind + shadcn/ui front end                                     |
+| `schema/`              | Generated JSON Schema for editor validation                                       |
+| `examples/`            | Small fictional dataset for development and tests                                 |
+
+Server pieces are Effect services provided as layers (`AppConfig`, `DataSource`, `DataStore`,
+`Health`, `Logs`), so tests swap any of them. The graph layout and topology code stays plain
+TypeScript: it is synchronous and pure, and Effect would add nothing there.
 
 ### API (all `GET`)
 
@@ -104,8 +115,8 @@ naming the variable.
 
 ### Uptime Kuma
 
-`/api/health` reads Kuma's Prometheus `/metrics` and caches the result for 30 s (10 s after an
-error). Uptime Kuma 2.0 or newer is required, because older versions have no `monitor_id` label.
+`/api/health` reads Kuma's Prometheus `/metrics` on demand and caches the result for 30 s. After an
+error it retries after 10 s, then 20 s, then every 30 s while Kuma stays down. Uptime Kuma 2.0 or newer is required, because older versions have no `monitor_id` label.
 Kuma 2.5 also provides uptime ratios (`1d`, `30d`, `365d`), which the Health tab shows. Set
 `KUMA_API_KEY_FILE` only if `/metrics` requires auth. The key is sent as the basic-auth password and
 the file is re-read on every fetch, so rotation needs no restart. When Kuma is down or the key file is

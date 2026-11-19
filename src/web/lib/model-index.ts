@@ -111,7 +111,7 @@ export interface BackRef {
 /** Non-edge references: policy scope, procedure applies_to, history and question refs. */
 export function backRefs(model: SystemModel): Map<string, BackRef[]> {
   const out = new Map<string, BackRef[]>();
-  const add = (from: string, field: string, ids: string[] | undefined) => {
+  const add = (from: string, field: string, ids: readonly string[] | undefined) => {
     for (const id of ids ?? []) push(out, id, { from, field });
   };
   for (const p of model.policies) add(p.id, 'scope', p.scope);

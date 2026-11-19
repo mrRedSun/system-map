@@ -1,10 +1,24 @@
 /**
- * Uptime Kuma health from its Prometheus `/metrics` endpoint, cached so the page never waits on
- * Kuma and Kuma's API rate limit (60/min) is never approached.
+ * Uptime Kuma health from its Prometheus `/metrics` endpoint, fetched on demand and cached, so
+ * the page never waits on Kuma and Kuma's API rate limit (60/min) is never approached. Nothing
+ * polls Kuma while nobody looks at the page.
  */
-import { readFile } from 'node:fs/promises';
+import {
+  Clock,
+  Context,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Schema,
+  Semaphore,
+  Stream,
+} from 'effect';
+import { HttpClient, HttpClientRequest } from 'effect/http';
 import type { HealthResponse, HealthStatus, MonitorHealth } from '../shared/model.js';
-import { errorMessage, log } from './log.js';
+import { AppConfig } from './config.js';
+import { errorMessage } from './logging.js';
 
 const STATUS: Record<string, HealthStatus> = {
   '0': 'down',
@@ -39,9 +53,13 @@ export function parsePrometheus(text: string): MetricSample[] {
   return out;
 }
 
+type MutableHealth = { -readonly [K in keyof MonitorHealth]: MonitorHealth[K] } & {
+  uptime?: Record<string, number>;
+};
+
 /** Kuma metrics → health per monitor id. Series without `monitor_id` (Kuma < 2.0) are skipped. */
 export function kumaHealth(text: string): Record<string, MonitorHealth> {
-  const monitors: Record<string, MonitorHealth> = {};
+  const monitors: Record<string, MutableHealth> = {};
   const get = (labels: Record<string, string>) => {
     const id = labels.monitor_id;
     if (!id || !/^\d+$/.test(id)) return undefined;
@@ -63,90 +81,139 @@ export function kumaHealth(text: string): Record<string, MonitorHealth> {
   return monitors;
 }
 
+export class KumaError extends Schema.TaggedError<KumaError>()('KumaError', {
+  message: Schema.String,
+}) {}
+
 export interface KumaOptions {
   url: URL;
   apiKeyFile?: string;
-  ttlMs?: number;
-  /** Errors are cached for less time, so recovery shows up quickly. */
-  errorTtlMs?: number;
-  timeoutMs?: number;
+  ttl?: Duration.Input;
+  /** Errors are cached for less time, so recovery shows up quickly; see `errorTtl`. */
+  errorTtl?: Duration.Input;
+  timeout?: Duration.Input;
   maxBytes?: number;
-  fetch?: typeof fetch;
-  now?: () => number;
 }
 
-export class KumaClient {
-  private cached: { at: number; body: HealthResponse; ok: boolean } | undefined;
-  private inflight: Promise<HealthResponse> | undefined;
-  private readonly metricsUrl: URL;
+/**
+ * How long a failed read is cached: `base`, doubling with each consecutive failure, never
+ * longer than a successful read is cached. Kuma being down then costs at most one request
+ * per `ttl`, while a short outage still clears within `base`.
+ */
+export function errorBackoff(failures: number, base: Duration.Duration, ttl: Duration.Duration) {
+  const ms = Duration.toMillis(base) * 2 ** Math.max(0, failures - 1);
+  return Duration.millis(Math.min(ms, Duration.toMillis(ttl)));
+}
 
-  constructor(private readonly o: KumaOptions) {
-    this.metricsUrl = new URL('metrics', o.url);
-  }
-
-  async get(): Promise<HealthResponse> {
-    const now = (this.o.now ?? Date.now)();
-    if (this.cached) {
-      const ttl = this.cached.ok ? (this.o.ttlMs ?? 30_000) : (this.o.errorTtlMs ?? 10_000);
-      if (now - this.cached.at < ttl) return this.cached.body;
-    }
-    this.inflight ??= this.fetchHealth().finally(() => {
-      this.inflight = undefined;
-    });
-    return this.inflight;
-  }
-
-  private async fetchHealth(): Promise<HealthResponse> {
-    const now = (this.o.now ?? Date.now)();
-    try {
-      const headers: Record<string, string> = { Accept: 'text/plain' };
-      if (this.o.apiKeyFile) {
-        let key: string;
-        try {
-          key = (await readFile(this.o.apiKeyFile, 'utf8')).trim();
-        } catch (err) {
-          throw new Error(`Kuma API key file is not readable: ${errorMessage(err)}`, {
-            cause: err,
-          });
-        }
-        if (!key) throw new Error('Kuma API key file is empty');
-        // Kuma takes the key as the basic-auth password; the username is ignored.
-        headers.Authorization = `Basic ${Buffer.from(`:${key}`).toString('base64')}`;
+/** Health source behind `/api/health`. Never fails: errors become `{ error }`. */
+export class Health extends Context.Service<
+  Health,
+  { readonly get: Effect.Effect<HealthResponse> }
+>()('system-map/Health') {
+  /** Kuma when `KUMA_URL` is set; otherwise a fixed "not configured" answer. */
+  static readonly layer = Layer.effect(
+    Health,
+    Effect.gen(function* () {
+      const config = yield* AppConfig;
+      if (Option.isNone(config.kumaUrl)) {
+        return Health.of({ get: Effect.succeed({ error: 'Uptime Kuma is not configured' }) });
       }
-      const res = await (this.o.fetch ?? fetch)(this.metricsUrl, {
-        headers,
-        redirect: 'error',
-        signal: AbortSignal.timeout(this.o.timeoutMs ?? 5_000),
+      return yield* makeKuma({
+        url: config.kumaUrl.value,
+        ...(Option.isSome(config.kumaApiKeyFile)
+          ? { apiKeyFile: config.kumaApiKeyFile.value }
+          : {}),
       });
-      if (!res.ok) throw new Error(`Uptime Kuma answered HTTP ${res.status}`);
-      const text = await readLimited(res, this.o.maxBytes ?? 8 * 1024 * 1024);
-      const body: HealthResponse = { ...kumaHealth(text) };
-      this.cached = { at: now, body, ok: true };
-      return body;
-    } catch (err) {
-      const message = errorMessage(err);
-      if (this.cached?.ok !== false) log.warn('uptime kuma unavailable', { error: message });
-      const body: HealthResponse = { error: message };
-      this.cached = { at: now, body, ok: false };
-      return body;
-    }
-  }
+    }),
+  );
 }
 
-async function readLimited(res: Response, maxBytes: number): Promise<string> {
-  if (!res.body) return '';
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel();
-      throw new Error(`Uptime Kuma metrics exceed ${maxBytes} bytes`);
+export const makeKuma = Effect.fnUntraced(function* (o: KumaOptions) {
+  const http = yield* HttpClient.HttpClient;
+  const fs = yield* FileSystem.FileSystem;
+  const ttl = Duration.fromInputUnsafe(o.ttl ?? '30 seconds');
+  const errorTtl = Duration.fromInputUnsafe(o.errorTtl ?? '10 seconds');
+  const maxBytes = o.maxBytes ?? 8 * 1024 * 1024;
+  const metricsUrl = new URL('metrics', o.url).href;
+  const lock = yield* Semaphore.make(1);
+  let cached: { at: number; body: HealthResponse; ok: boolean } | undefined;
+  let failures = 0;
+
+  const authHeader = Effect.gen(function* () {
+    if (o.apiKeyFile === undefined) return Option.none<string>();
+    const key = (yield* fs
+      .readFileString(o.apiKeyFile)
+      .pipe(
+        Effect.mapError(
+          (err) =>
+            new KumaError({ message: `Kuma API key file is not readable: ${errorMessage(err)}` }),
+        ),
+      )).trim();
+    if (!key) return yield* new KumaError({ message: 'Kuma API key file is empty' });
+    // Kuma takes the key as the basic-auth password; the username is ignored.
+    return Option.some(`Basic ${Buffer.from(`:${key}`).toString('base64')}`);
+  });
+
+  const fetchMetrics = Effect.gen(function* () {
+    const auth = yield* authHeader;
+    let req = HttpClientRequest.get(metricsUrl).pipe(HttpClientRequest.accept('text/plain'));
+    if (Option.isSome(auth)) req = HttpClientRequest.setHeader(req, 'Authorization', auth.value);
+    const res = yield* http.execute(req).pipe(
+      // Report the underlying cause (e.g. "fetch failed"), as the pre-Effect client did.
+      Effect.mapError((err) => {
+        const cause = (err.reason as { cause?: unknown } | undefined)?.cause;
+        return new KumaError({ message: errorMessage(cause ?? err.reason ?? err) });
+      }),
+    );
+    if (res.status < 200 || res.status >= 300) {
+      return yield* new KumaError({ message: `Uptime Kuma answered HTTP ${res.status}` });
     }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    yield* res.stream.pipe(
+      Stream.mapError((err) => new KumaError({ message: errorMessage(err) })),
+      Stream.runForEach((chunk) => {
+        size += chunk.byteLength;
+        if (size > maxBytes) {
+          return Effect.fail(
+            new KumaError({ message: `Uptime Kuma metrics exceed ${maxBytes} bytes` }),
+          );
+        }
+        chunks.push(chunk);
+        return Effect.void;
+      }),
+    );
+    return Buffer.concat(chunks).toString('utf8');
+  }).pipe(
+    Effect.scoped,
+    Effect.timeoutOrElse({
+      duration: o.timeout ?? '5 seconds',
+      orElse: () => Effect.fail(new KumaError({ message: 'Uptime Kuma did not answer in time' })),
+    }),
+  );
+
+  const refresh = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (cached) {
+      const fresh = cached.ok ? ttl : errorBackoff(failures, errorTtl, ttl);
+      if (now - cached.at < Duration.toMillis(fresh)) return cached.body;
+    }
+    const result = yield* Effect.result(fetchMetrics);
+    if (result._tag === 'Success') {
+      failures = 0;
+      cached = { at: now, body: { ...kumaHealth(result.success) }, ok: true };
+    } else {
+      if (failures === 0) {
+        yield* Effect.logWarning('uptime kuma unavailable').pipe(
+          Effect.annotateLogs({ error: result.failure.message }),
+        );
+      }
+      failures++;
+      cached = { at: now, body: { error: result.failure.message }, ok: false };
+    }
+    return cached.body;
+  });
+
+  // One fetch at a time; callers that waited get the result it cached.
+  return Health.of({ get: lock.withPermits(1)(refresh) });
+});

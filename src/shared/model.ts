@@ -1,21 +1,8 @@
-/** Types of the API payloads shared by server and client. */
-import type {
-  Backup,
-  HistoryEntry,
-  Job,
-  Meta,
-  Monitor,
-  Network,
-  OpenQuestion,
-  Policy,
-  Procedure,
-  Route,
-  SectionKey,
-  Service,
-  Stack,
-  SystemNode,
-  Zone,
-} from './schema.js';
+/** Schemas and types of the API payloads shared by server and client. */
+import { Schema } from 'effect';
+import { looseSchemas, type SectionKey } from './schema.js';
+
+export { STACK_COLORS } from './constants.js';
 
 /** Singular entity kind for each top-level section. */
 export const SECTION_KIND = {
@@ -36,24 +23,8 @@ export const SECTION_KIND = {
 
 export type EntityKind = (typeof SECTION_KIND)[SectionKey];
 
-/** Section names in display order. Kept here (not in schema.ts) so the client does not bundle zod. */
+/** Section names in display order. */
 export const SECTIONS = Object.keys(SECTION_KIND) as SectionKey[];
-
-/** Named tints for stack group boxes; the app maps them to theme-aware colors. */
-export const STACK_COLORS = [
-  'gray',
-  'red',
-  'orange',
-  'amber',
-  'lime',
-  'green',
-  'teal',
-  'cyan',
-  'blue',
-  'indigo',
-  'violet',
-  'pink',
-] as const;
 
 export const EDGE_KINDS = [
   'contains',
@@ -66,86 +37,125 @@ export const EDGE_KINDS = [
 ] as const;
 export type EdgeKind = (typeof EDGE_KINDS)[number];
 
-export interface Edge {
-  id: string;
-  kind: EdgeKind;
-  source: string;
-  target: string;
+export const Edge = Schema.Struct({
+  id: Schema.String,
+  kind: Schema.Literals(EDGE_KINDS),
+  source: Schema.String,
+  target: Schema.String,
   /** Purpose, protocol, or mount path, when known. */
-  label?: string;
-}
+  label: Schema.optionalKey(Schema.String),
+});
+export type Edge = typeof Edge.Type;
 
-export type ProblemCode =
-  'yaml' | 'file' | 'schema' | 'unknown-key' | 'duplicate-id' | 'dangling-ref' | 'merge-conflict';
+export const PROBLEM_CODES = [
+  'yaml',
+  'file',
+  'schema',
+  'unknown-key',
+  'duplicate-id',
+  'dangling-ref',
+  'merge-conflict',
+] as const;
+export type ProblemCode = (typeof PROBLEM_CODES)[number];
 
-export interface Problem {
-  severity: 'error' | 'warning';
-  code: ProblemCode;
-  message: string;
-  file?: string;
-  line?: number;
+export const Problem = Schema.Struct({
+  severity: Schema.Literals(['error', 'warning']),
+  code: Schema.Literals(PROBLEM_CODES),
+  message: Schema.String,
+  file: Schema.optionalKey(Schema.String),
+  line: Schema.optionalKey(Schema.Number),
   /** Path inside the merged model, e.g. `services[3].ports[0].port`. */
-  path?: string;
-  entity?: string;
-}
+  path: Schema.optionalKey(Schema.String),
+  entity: Schema.optionalKey(Schema.String),
+});
+export type Problem = typeof Problem.Type;
 
-export interface SourceRef {
-  file: string;
-  line: number;
+export const SourceRef = Schema.Struct({
+  file: Schema.String,
+  line: Schema.Number,
   /** The entity's YAML text as written in the file. */
-  raw: string;
-}
+  raw: Schema.String,
+});
+export type SourceRef = typeof SourceRef.Type;
 
-export interface SystemModel {
-  version: 1;
-  meta: Meta;
-  policies: Policy[];
-  procedures: Procedure[];
-  zones: Zone[];
-  networks: Network[];
-  nodes: SystemNode[];
-  services: Service[];
-  stacks: Stack[];
-  routes: Route[];
-  monitors: Monitor[];
-  jobs: Job[];
-  backups: Backup[];
-  history: HistoryEntry[];
-  open_questions: OpenQuestion[];
+const s = looseSchemas.sections;
+export const SystemModel = Schema.Struct({
+  version: Schema.Literal(1),
+  meta: looseSchemas.meta,
+  policies: Schema.Array(s.policies),
+  procedures: Schema.Array(s.procedures),
+  zones: Schema.Array(s.zones),
+  networks: Schema.Array(s.networks),
+  nodes: Schema.Array(s.nodes),
+  services: Schema.Array(s.services),
+  stacks: Schema.Array(s.stacks),
+  routes: Schema.Array(s.routes),
+  monitors: Schema.Array(s.monitors),
+  jobs: Schema.Array(s.jobs),
+  backups: Schema.Array(s.backups),
+  history: Schema.Array(s.history),
+  open_questions: Schema.Array(s.open_questions),
   /** Relationships derived from references. */
-  edges: Edge[];
-  problems: Problem[];
+  edges: Schema.Array(Edge),
+  problems: Schema.Array(Problem),
   /** Where each entity is defined, keyed by id. */
-  sources: Record<string, SourceRef>;
-  files: string[];
-  loadedAt: string;
+  sources: Schema.Record(Schema.String, SourceRef),
+  files: Schema.Array(Schema.String),
+  loadedAt: Schema.String,
   /**
    * True when the current files could not be parsed and this is the last good model.
    * The parse errors are in `problems`.
    */
-  stale: boolean;
-}
+  stale: Schema.Boolean,
+});
+export type SystemModel = typeof SystemModel.Type;
 
-export type HealthStatus = 'up' | 'down' | 'pending' | 'maintenance' | 'unknown';
+export const HEALTH_STATUSES = ['up', 'down', 'pending', 'maintenance', 'unknown'] as const;
+export type HealthStatus = (typeof HEALTH_STATUSES)[number];
 
-export interface MonitorHealth {
-  status: HealthStatus;
-  name: string;
-  msg?: string;
+export const MonitorHealth = Schema.Struct({
+  status: Schema.Literals(HEALTH_STATUSES),
+  name: Schema.String,
+  msg: Schema.optionalKey(Schema.String),
   /** Last response time in ms. */
-  ping?: number;
+  ping: Schema.optionalKey(Schema.Number),
   /** Uptime ratio (0 to 1) per window, e.g. `{ "1d": 0.998 }` (Kuma 2.x). */
-  uptime?: Record<string, number>;
-}
+  uptime: Schema.optionalKey(Schema.Record(Schema.String, Schema.Number)),
+});
+export type MonitorHealth = typeof MonitorHealth.Type;
 
 /**
  * `/api/health` body: monitor health keyed by Uptime Kuma monitor id (`kuma_id`, as a
  * string), plus an `error` string when Kuma could not be read. Monitor ids are numeric,
  * so they never collide with `error`.
  */
-export type HealthResponse = { error?: string } & Record<string, MonitorHealth | string>;
+export const HealthResponse = Schema.Record(
+  Schema.String,
+  Schema.Union([MonitorHealth, Schema.String]),
+);
+export type HealthResponse = { readonly error?: string } & {
+  readonly [id: string]: MonitorHealth | string;
+};
 
-export interface WhoAmI {
-  user?: string;
-  name?: string;
-}
+export const WhoAmI = Schema.Struct({
+  user: Schema.optionalKey(Schema.String),
+  name: Schema.optionalKey(Schema.String),
+});
+export type WhoAmI = typeof WhoAmI.Type;
+
+/** `/api/events` SSE `model` event data. */
+export const ModelChanged = Schema.Struct({ etag: Schema.String });
+
+/** `/api/logs` SSE events: `line`, `dropped`, `status`, `error`, `end`. */
+export const LogLine = Schema.Struct({
+  ts: Schema.Number,
+  level: Schema.String,
+  stream: Schema.String,
+  text: Schema.String,
+});
+export type LogLine = typeof LogLine.Type;
+export const LogDropped = Schema.Struct({ count: Schema.Number });
+export const LogMessage = Schema.Struct({ message: Schema.String });
+
+/** Error body of the JSON API. */
+export const ApiErrorBody = Schema.Struct({ error: Schema.String });

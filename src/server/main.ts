@@ -1,84 +1,96 @@
-import { statSync } from 'node:fs';
-import type { Server } from 'node:http';
+/**
+ * Server entrypoint: validate configuration, load the model, serve. On SIGTERM/SIGINT the
+ * long-lived streams end first, then the HTTP server drains (bounded) and the process exits.
+ */
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { serve } from '@hono/node-server';
-import { createApp } from './app.js';
-import { ConfigError, loadConfig, type Config } from './config.js';
-import { errorMessage, log } from './log.js';
-import { DozzleProxy } from './dozzle.js';
-import { KumaClient } from './kuma.js';
-import { ModelStore } from './store.js';
+import { NodeHttpServer, NodeRuntime, NodeServices } from '@effect/platform-node';
+import { Deferred, Effect, Fiber, FileSystem, Layer, Option, Runtime } from 'effect';
+import { FetchHttpClient, HttpRouter } from 'effect/http';
+import * as Config from './config.js';
+import { Logs } from './dozzle.js';
+import * as Http from './http.js';
+import { Health } from './kuma.js';
+import * as Logging from './logging.js';
+import { DataSource, DataStore } from './store.js';
 
-const SHUTDOWN_TIMEOUT_MS = 10_000;
+const SHUTDOWN_TIMEOUT = '10 seconds';
 
-function configure(): Config {
-  try {
-    const config = loadConfig(process.env, fileURLToPath(new URL('./public', import.meta.url)));
-    if (!statSync(config.dataDir, { throwIfNoEntry: false })?.isDirectory()) {
-      throw new ConfigError(`DATA_DIR ${config.dataDir} is not a readable directory`);
-    }
-    return config;
-  } catch (err) {
-    log.error(errorMessage(err));
-    process.exit(2);
-  }
-}
-
-async function main() {
-  const config = configure();
-  const store = new ModelStore(config.dataDir);
-  await store.reload();
-  store.watch();
-
-  const shutdown = new AbortController();
-  const health = config.kumaUrl
-    ? new KumaClient({ url: config.kumaUrl, apiKeyFile: config.kumaApiKeyFile })
-    : undefined;
-  const logs = config.dozzleUrl
-    ? new DozzleProxy({
-        url: config.dozzleUrl,
-        // Only containers declared in the current data may be streamed.
-        allowed: (host, container) =>
-          store
-            .current()
-            ?.model.services.some(
-              (s) => s.logs?.dozzle?.host === host && s.logs.dozzle.container === container,
-            ) ?? false,
-      })
-    : undefined;
-  const app = createApp({
-    store,
-    publicDir: config.publicDir,
-    shutdown: shutdown.signal,
-    health,
-    logs,
-  });
-  const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) =>
-    log.info('listening', {
-      port: info.port,
-      dataDir: config.dataDir,
-      kuma: Boolean(config.kumaUrl),
-      dozzle: Boolean(config.dozzleUrl),
-    }),
+const configure = Effect.gen(function* () {
+  const config = yield* Config.parseEnv(
+    process.env,
+    fileURLToPath(new URL('./public', import.meta.url)),
   );
-  const http = server as Server;
-  http.headersTimeout = 15_000;
-  http.requestTimeout = 0; // SSE streams are long-lived.
-  http.keepAliveTimeout = 5_000;
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* Effect.option(fs.stat(config.dataDir));
+  if (Option.isNone(info) || info.value.type !== 'Directory') {
+    return yield* new Config.ConfigError({
+      message: `DATA_DIR ${config.dataDir} is not a readable directory`,
+    });
+  }
+  return config;
+}).pipe(
+  Effect.catchTag('ConfigError', (err) =>
+    Effect.logError(err.message).pipe(
+      Effect.andThen(Effect.sync(() => process.exit(2))),
+      Effect.andThen(Effect.never),
+    ),
+  ),
+  Effect.provide([NodeServices.layer, Logging.layer('info')]),
+);
 
-  const stop = (signal: string) => {
-    log.info('shutting down', { signal });
-    shutdown.abort();
-    store.close();
-    const force = setTimeout(() => {
-      log.warn('forced exit after shutdown timeout');
-      process.exit(1);
-    }, SHUTDOWN_TIMEOUT_MS);
-    force.unref();
-    server.close(() => process.exit(0));
-  };
-  process.once('SIGTERM', () => stop('SIGTERM'));
-  process.once('SIGINT', () => stop('SIGINT'));
-}
+const app = (config: Config.Config, shutdown: Deferred.Deferred<void>) => {
+  const store = DataStore.layer().pipe(Layer.provide(DataSource.layer()));
+  const services = Layer.mergeAll(Health.layer, Logs.layer).pipe(Layer.provideMerge(store));
+  const listening = Layer.effectDiscard(
+    Effect.logInfo('listening').pipe(
+      Effect.annotateLogs({
+        port: config.port,
+        dataDir: config.dataDir,
+        kuma: Option.isSome(config.kumaUrl),
+        dozzle: Option.isSome(config.dozzleUrl),
+      }),
+    ),
+  );
+  const server = NodeHttpServer.layer(
+    () => {
+      const s = createServer();
+      s.headersTimeout = 15_000;
+      s.requestTimeout = 0; // SSE streams are long-lived.
+      s.keepAliveTimeout = 5_000;
+      return s;
+    },
+    { port: config.port, host: '0.0.0.0', gracefulShutdownTimeout: SHUTDOWN_TIMEOUT },
+  );
+  return HttpRouter.serve(Http.layer({ publicDir: config.publicDir }), {
+    disableLogger: true,
+    disableListenLog: true,
+  }).pipe(
+    Layer.merge(listening),
+    Layer.provide(services),
+    Layer.provide(Layer.succeed(Http.Shutdown, shutdown)),
+    Layer.provide(server),
+    Layer.provide([FetchHttpClient.layer, NodeServices.layer, Config.layer(config)]),
+  );
+};
 
-void main();
+const main = Effect.gen(function* () {
+  const config = yield* configure;
+  const shutdown = yield* Deferred.make<void>();
+  const running = yield* Effect.forkChild(Layer.launch(app(config, shutdown)));
+  yield* Fiber.join(running).pipe(
+    Effect.onInterrupt(() =>
+      Effect.logInfo('shutting down').pipe(
+        // End event and log streams so the server can close its connections promptly.
+        Effect.andThen(Deferred.succeed(shutdown, undefined)),
+        Effect.andThen(Fiber.interrupt(running)),
+      ),
+    ),
+  );
+}).pipe(Effect.provide(Logging.layer(Config.logLevelFromEnv(process.env))));
+
+NodeRuntime.runMain(main, {
+  // A shutdown requested by a signal is a clean exit (0), not an interruption (130).
+  teardown: (exit, onExit) =>
+    Runtime.defaultTeardown(exit, (code) => onExit(code === 130 ? 0 : code)),
+});

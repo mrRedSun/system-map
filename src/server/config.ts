@@ -1,53 +1,75 @@
-import { z } from 'zod';
+/** Runtime configuration from the environment, validated once at startup. */
+import { Context, Effect, Layer, Option, Schema } from 'effect';
+import { LOG_LEVELS, type AppLogLevel } from './logging.js';
 
 export interface Config {
   /** Directory with the `*.yaml` data files. Read-only. */
-  dataDir: string;
-  port: number;
+  readonly dataDir: string;
+  readonly port: number;
   /** Uptime Kuma base URL; health is disabled when unset. */
-  kumaUrl?: URL;
+  readonly kumaUrl: Option.Option<URL>;
   /** File holding the Kuma API key; when unset, `/metrics` is fetched without auth. */
-  kumaApiKeyFile?: string;
+  readonly kumaApiKeyFile: Option.Option<string>;
   /** Dozzle hub base URL; logs are disabled when unset. */
-  dozzleUrl?: URL;
+  readonly dozzleUrl: Option.Option<URL>;
   /** Directory with the built SPA. */
-  publicDir: string;
+  readonly publicDir: string;
+  readonly logLevel: AppLogLevel;
 }
 
-const emptyToUndefined = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? undefined : v);
-const httpUrl = z.preprocess(
-  emptyToUndefined,
-  z
-    .url({ protocol: /^https?$/, error: 'must be an http(s) URL' })
-    .transform((u) => new URL(u.endsWith('/') ? u : `${u}/`))
-    .optional(),
-);
-const path = z.preprocess(emptyToUndefined, z.string().min(1).optional());
+export class AppConfig extends Context.Service<AppConfig, Config>()('system-map/AppConfig') {}
 
-const EnvSchema = z.object({
-  DATA_DIR: z.preprocess(emptyToUndefined, z.string().min(1).default('/data')),
-  PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(65535).default(8080)),
-  KUMA_URL: httpUrl,
-  KUMA_API_KEY_FILE: path,
-  DOZZLE_URL: httpUrl,
-  PUBLIC_DIR: path,
-});
+export class ConfigError extends Schema.TaggedError<ConfigError>()('ConfigError', {
+  message: Schema.String,
+}) {}
 
-export class ConfigError extends Error {}
+const blankToUndefined = (v: string | undefined) =>
+  v === undefined || v.trim() === '' ? undefined : v;
 
-export function loadConfig(env: NodeJS.ProcessEnv, defaultPublicDir: string): Config {
-  const parsed = EnvSchema.safeParse(env);
-  if (!parsed.success) {
-    const lines = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`);
-    throw new ConfigError(`Invalid configuration:\n${lines.join('\n')}`);
-  }
-  const e = parsed.data;
-  return {
-    dataDir: e.DATA_DIR,
-    port: e.PORT,
-    kumaUrl: e.KUMA_URL,
-    kumaApiKeyFile: e.KUMA_API_KEY_FILE,
-    dozzleUrl: e.DOZZLE_URL,
-    publicDir: e.PUBLIC_DIR ?? defaultPublicDir,
+const isHttpUrl = (v: string) => URL.canParse(v) && /^https?:$/.test(new URL(v).protocol);
+
+/** Parse the environment; every problem is reported at once. */
+export function parseEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  defaultPublicDir: string,
+): Effect.Effect<Config, ConfigError> {
+  const issues: string[] = [];
+  const url = (key: string): Option.Option<URL> => {
+    const v = blankToUndefined(env[key]);
+    if (v === undefined) return Option.none();
+    if (!isHttpUrl(v)) {
+      issues.push(`  ${key}: must be an http(s) URL`);
+      return Option.none();
+    }
+    return Option.some(new URL(v.endsWith('/') ? v : `${v}/`));
   };
+  const portRaw = blankToUndefined(env.PORT);
+  const port = portRaw === undefined ? 8080 : Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    issues.push('  PORT: must be an integer from 1 to 65535');
+  }
+  const logLevel = blankToUndefined(env.LOG_LEVEL) ?? 'info';
+  if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) {
+    issues.push(`  LOG_LEVEL: ${JSON.stringify(logLevel)} is not one of info, warn, error`);
+  }
+  const config: Config = {
+    dataDir: blankToUndefined(env.DATA_DIR) ?? '/data',
+    port,
+    kumaUrl: url('KUMA_URL'),
+    kumaApiKeyFile: Option.fromNullishOr(blankToUndefined(env.KUMA_API_KEY_FILE)),
+    dozzleUrl: url('DOZZLE_URL'),
+    publicDir: blankToUndefined(env.PUBLIC_DIR) ?? defaultPublicDir,
+    logLevel: logLevel as AppLogLevel,
+  };
+  return issues.length > 0
+    ? Effect.fail(new ConfigError({ message: `Invalid configuration:\n${issues.join('\n')}` }))
+    : Effect.succeed(config);
 }
+
+export const layer = (config: Config) => Layer.succeed(AppConfig, config);
+
+/** The log level to start with; an invalid value is reported by `parseEnv`. */
+export const logLevelFromEnv = (env: Readonly<Record<string, string | undefined>>): AppLogLevel => {
+  const v = blankToUndefined(env.LOG_LEVEL);
+  return (LOG_LEVELS as readonly string[]).includes(v ?? '') ? (v as AppLogLevel) : 'info';
+};

@@ -6,40 +6,43 @@
  * ids from the first `containers-changed` event. History comes from the JSONL logs endpoint and
  * live lines from the SSE stream, starting where history ended.
  */
-import type { Context } from 'hono';
-import { streamSSE } from 'hono/streaming';
-import { SseParser, type SseMessage } from '../shared/sse.js';
-import type { LogSource } from './app.js';
-import { errorMessage, log } from './log.js';
+import { Clock, Context, Duration, Effect, Layer, Option, Schema, Semaphore, Stream } from 'effect';
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from 'effect/http';
+import type { LogLine } from '../shared/model.js';
+import { decodeSse } from '../shared/sse.js';
+import { AppConfig } from './config.js';
+import { errorMessage } from './logging.js';
 import { redact } from './redact.js';
+import { DataStore } from './store.js';
 
 /** Every level Dozzle knows; without them the stream sends nothing. */
 const LEVELS = ['info', 'debug', 'warn', 'error', 'fatal', 'trace', 'unknown'];
 
+export class DozzleError extends Schema.TaggedError<DozzleError>()('DozzleError', {
+  status: Schema.Literals([404, 429, 502, 503]),
+  message: Schema.String,
+}) {}
+
 export interface DozzleOptions {
   url: URL;
-  /** True when this host/container pair is declared in the data (`logs.dozzle`). */
-  allowed: (host: string, container: string) => boolean;
-  fetch?: typeof fetch;
   maxStreams?: number;
   /** Dozzle's history endpoint returns at most 500 lines. */
   maxTail?: number;
   linesPerSecond?: number;
   burst?: number;
   maxLineLength?: number;
-  idleTimeoutMs?: number;
-  requestTimeoutMs?: number;
-  cacheMs?: number;
+  idleTimeout?: Duration.Input;
+  requestTimeout?: Duration.Input;
+  cacheTtl?: Duration.Input;
 }
 
-export interface LogLine {
-  ts: number;
-  level: string;
-  stream: string;
-  text: string;
-}
+/** One outgoing SSE event of `/api/logs`. */
+export type LogEvent =
+  | { event: 'line'; data: LogLine }
+  | { event: 'dropped'; data: { count: number } }
+  | { event: 'status' | 'error' | 'end'; data: { message: string } };
 
-interface DozzleEvent {
+export interface DozzleEvent {
   t?: string;
   m?: unknown;
   rm?: unknown;
@@ -61,15 +64,6 @@ interface DozzleContainer {
   host: string;
   state?: string;
   created?: string | number;
-}
-
-export class HttpError extends Error {
-  constructor(
-    readonly status: 400 | 404 | 429 | 502,
-    message: string,
-  ) {
-    super(message);
-  }
 }
 
 const ENTITIES: Record<string, string> = {
@@ -110,275 +104,40 @@ export function lineText(ev: DozzleEvent, maxLength = 8192): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
-class TokenBucket {
-  private tokens: number;
-  private last = Date.now();
-  constructor(
-    private readonly rate: number,
-    private readonly burst: number,
-  ) {
-    this.tokens = burst;
-  }
-  take(): boolean {
-    const now = Date.now();
-    this.tokens = Math.min(this.burst, this.tokens + ((now - this.last) / 1000) * this.rate);
-    this.last = now;
-    if (this.tokens < 1) return false;
-    this.tokens -= 1;
+/** Token bucket on the Effect clock (so tests can drive it with `TestClock`). */
+export function tokenBucket(rate: number, burst: number) {
+  let tokens = burst;
+  let last: number | undefined;
+  return Effect.map(Clock.currentTimeMillis, (now) => {
+    if (last !== undefined) tokens = Math.min(burst, tokens + ((now - last) / 1000) * rate);
+    last = now;
+    if (tokens < 1) return false;
+    tokens -= 1;
     return true;
-  }
+  });
 }
 
-export class DozzleProxy implements LogSource {
-  private active = 0;
-  private hostCache: { at: number; hosts: DozzleHost[] } | undefined;
-  private readonly containerCache = new Map<string, { at: number; id: string }>();
-  private readonly fetch: typeof fetch;
-
-  constructor(private readonly o: DozzleOptions) {
-    this.fetch = o.fetch ?? fetch;
-  }
-
-  private url(path: string, params?: URLSearchParams): URL {
-    const u = new URL(path, this.o.url);
-    if (params) u.search = params.toString();
-    return u;
-  }
-
-  private async hosts(): Promise<DozzleHost[]> {
-    const cacheMs = this.o.cacheMs ?? 30_000;
-    if (this.hostCache && Date.now() - this.hostCache.at < cacheMs) return this.hostCache.hosts;
-    const res = await this.request(this.url('./'), {});
-    const html = await res.text();
-    const m = /<script[^>]*id="config__json"[^>]*>([\s\S]*?)<\/script>/.exec(html);
-    if (!m) throw new HttpError(502, 'Dozzle page has no config; is DOZZLE_URL the hub root?');
-    let hosts: DozzleHost[];
-    try {
-      hosts = ((JSON.parse(m[1]!) as { hosts?: DozzleHost[] }).hosts ?? []).filter(
-        (h) => typeof h?.id === 'string' && typeof h?.name === 'string',
-      );
-    } catch {
-      throw new HttpError(502, 'Dozzle config is not valid JSON');
-    }
-    this.hostCache = { at: Date.now(), hosts };
-    return hosts;
-  }
-
-  async resolveHost(name: string): Promise<string> {
-    const host = (await this.hosts()).find((h) => h.name === name || h.id === name);
-    if (!host) throw new HttpError(404, `Dozzle has no host named "${name}"`);
-    if (host.available === false) throw new HttpError(502, `Dozzle host "${name}" is unavailable`);
-    return host.id;
-  }
-
-  /** Container id for a name on a host, from Dozzle's container event stream. */
-  async resolveContainer(hostId: string, name: string): Promise<string> {
-    const key = `${hostId}/${name}`;
-    const cached = this.containerCache.get(key);
-    if (cached && Date.now() - cached.at < (this.o.cacheMs ?? 30_000)) return cached.id;
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), this.o.requestTimeoutMs ?? 5_000);
-    const seen = new Map<string, DozzleContainer>();
-    try {
-      const res = await this.request(this.url('api/events/stream'), { signal: ctrl.signal });
-      for await (const msg of readSse(res.body, ctrl.signal)) {
-        if (msg.event !== 'containers-changed' && msg.event !== 'container-updated') continue;
-        const parsed = JSON.parse(msg.data) as DozzleContainer | DozzleContainer[];
-        for (const c of Array.isArray(parsed) ? parsed : [parsed]) {
-          if (c?.host === hostId && c.name === name) seen.set(c.id, c);
-        }
-        const match = pick([...seen.values()]);
-        if (match) {
-          this.containerCache.set(key, { at: Date.now(), id: match.id });
-          return match.id;
-        }
-      }
-    } catch (err) {
-      if (err instanceof HttpError) throw err;
-      if (!ctrl.signal.aborted) throw new HttpError(502, `Dozzle: ${errorMessage(err)}`);
-    } finally {
-      clearTimeout(timer);
-      ctrl.abort();
-    }
-    throw new HttpError(404, `Dozzle host has no container named "${name}"`);
-  }
-
-  private async request(url: URL, init: RequestInit): Promise<Response> {
-    let res: Response;
-    try {
-      res = await this.fetch(url, {
-        redirect: 'error',
-        ...init,
-        signal: init.signal ?? AbortSignal.timeout(this.o.requestTimeoutMs ?? 5_000),
-      });
-    } catch (err) {
-      throw new HttpError(502, `Dozzle unreachable: ${errorMessage(err)}`);
-    }
-    if (res.status === 404) {
-      await res.body?.cancel();
-      throw new HttpError(404, 'Dozzle: not found');
-    }
-    if (!res.ok) {
-      await res.body?.cancel();
-      throw new HttpError(502, `Dozzle answered HTTP ${res.status}`);
-    }
-    return res;
-  }
-
-  async stream(
-    c: Context,
-    host: string,
-    container: string,
-    tail: number,
-    signal: AbortSignal,
-  ): Promise<Response> {
-    if (!this.o.allowed(host, container)) {
-      return c.json({ error: 'This container is not declared in the data (logs.dozzle)' }, 404);
-    }
-    const maxStreams = this.o.maxStreams ?? 8;
-    if (this.active >= maxStreams) {
-      return c.json({ error: `Too many log streams (limit ${maxStreams})` }, 429);
-    }
-    this.active++;
-    let streaming = false;
-    try {
-      const hostId = await this.resolveHost(host);
-      const containerId = await this.resolveContainer(hostId, container);
-      streaming = true;
-      c.header('Cache-Control', 'no-store');
-      c.header('X-Accel-Buffering', 'no');
-      return streamSSE(c, async (sse) => {
-        try {
-          await this.pump(
-            sse,
-            `${hostId}/${containerId}`,
-            Math.min(tail, this.o.maxTail ?? 500),
-            signal,
-          );
-        } finally {
-          this.active--;
-        }
-      });
-    } catch (err) {
-      if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
-      throw err;
-    } finally {
-      if (!streaming) this.active--;
-    }
-  }
-
-  private async pump(
-    sse: {
-      writeSSE(m: { event?: string; data: string }): Promise<void>;
-      onAbort(fn: () => void): void;
+/**
+ * History and live overlap at the boundary; this drops what was already sent: anything older
+ * than the newest timestamp, and repeated ids at that timestamp.
+ */
+export function overlapFilter() {
+  let lastTs = 0;
+  let idsAtLastTs = new Set<number>();
+  return {
+    get lastTs() {
+      return lastTs;
     },
-    target: string,
-    tail: number,
-    clientSignal: AbortSignal,
-  ) {
-    const upstream = new AbortController();
-    const stop = () => upstream.abort();
-    clientSignal.addEventListener('abort', stop, { once: true });
-    sse.onAbort(stop);
-
-    const limiter = new TokenBucket(this.o.linesPerSecond ?? 50, this.o.burst ?? 500);
-    const maxLen = this.o.maxLineLength ?? 8192;
-    let dropped = 0;
-    let lastTs = 0;
-    let idsAtLastTs = new Set<number>();
-    const send = (event: string, data: unknown) =>
-      sse.writeSSE({ event, data: JSON.stringify(data) }).catch(stop);
-    const emit = async (ev: DozzleEvent) => {
-      const ts = typeof ev.ts === 'number' ? ev.ts : Date.now();
-      // History and live overlap at the boundary; skip what was already sent.
-      if (ts < lastTs || (ts === lastTs && ev.id !== undefined && idsAtLastTs.has(ev.id))) return;
+    accept(ts: number, id: number | undefined): boolean {
+      if (ts < lastTs || (ts === lastTs && id !== undefined && idsAtLastTs.has(id))) return false;
       if (ts > lastTs) {
         lastTs = ts;
         idsAtLastTs = new Set();
       }
-      if (ev.id !== undefined) idsAtLastTs.add(ev.id);
-      if (!limiter.take()) {
-        dropped++;
-        return;
-      }
-      const line: LogLine = {
-        ts,
-        level: ev.l ?? 'unknown',
-        stream: ev.s ?? 'stdout',
-        text: lineText(ev, maxLen),
-      };
-      await send('line', line);
-    };
-    const report = setInterval(() => {
-      if (dropped > 0) {
-        void send('dropped', { count: dropped });
-        dropped = 0;
-      }
-    }, 1000);
-
-    const params = () => {
-      const p = new URLSearchParams({ container: target, stdout: '1', stderr: '1' });
-      for (const l of LEVELS) p.append('levels', l);
-      return p;
-    };
-
-    try {
-      if (tail > 0) {
-        const body = params();
-        body.set('format', 'jsonl');
-        body.set('min', String(tail));
-        const res = await this.request(this.url('api/containers/logs'), {
-          method: 'POST',
-          body,
-          signal: AbortSignal.any([
-            upstream.signal,
-            AbortSignal.timeout(this.o.requestTimeoutMs ?? 5_000),
-          ]),
-        });
-        const lines = (await res.text()).split('\n').filter(Boolean).slice(-tail);
-        for (const l of lines) {
-          if (upstream.signal.aborted) return;
-          try {
-            await emit(JSON.parse(l) as DozzleEvent);
-          } catch {
-            // Skip a malformed history line.
-          }
-        }
-      }
-      const live = params();
-      live.set('since', new Date(lastTs || Date.now()).toISOString());
-      const res = await this.request(this.url('api/containers/logs/stream', live), {
-        headers: { Accept: 'text/event-stream' },
-        signal: upstream.signal,
-      });
-      await send('status', { message: 'live' });
-      for await (const msg of readSse(res.body, upstream.signal, this.o.idleTimeoutMs ?? 30_000)) {
-        if (msg.event === undefined || msg.event === 'message') {
-          try {
-            await emit(JSON.parse(msg.data) as DozzleEvent);
-          } catch {
-            // Skip a malformed live line.
-          }
-        } else if (msg.event === 'container-event') {
-          const name = (JSON.parse(msg.data) as { name?: string }).name ?? 'container event';
-          await send('status', { message: name.replace(/^container-/, 'container ') });
-        }
-      }
-      if (!upstream.signal.aborted) await send('end', { message: 'Dozzle closed the stream' });
-    } catch (err) {
-      if (!upstream.signal.aborted && !clientSignal.aborted) {
-        const message =
-          err instanceof HttpError ? err.message : `Log stream failed: ${errorMessage(err)}`;
-        log.warn('log stream failed', { target, error: message });
-        await send('error', { message });
-      }
-    } finally {
-      clearInterval(report);
-      clientSignal.removeEventListener('abort', stop);
-      upstream.abort();
-    }
-  }
+      if (id !== undefined) idsAtLastTs.add(id);
+      return true;
+    },
+  };
 }
 
 function pick(cs: DozzleContainer[]): DozzleContainer | undefined {
@@ -389,30 +148,376 @@ function pick(cs: DozzleContainer[]): DozzleContainer | undefined {
   )[0];
 }
 
-/** SSE messages from a response body; ends when the body ends or stays silent for `idleMs`. */
-async function* readSse(
-  body: ReadableStream<Uint8Array> | null,
-  signal: AbortSignal,
-  idleMs?: number,
-): AsyncGenerator<SseMessage> {
-  if (!body) return;
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  const parser = new SseParser();
+const parseJson = (text: string): unknown => {
   try {
-    while (!signal.aborted) {
-      let timer: NodeJS.Timeout | undefined;
-      const idle = idleMs
-        ? new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error('Dozzle went quiet')), idleMs);
-          })
-        : undefined;
-      const { value, done } = await (idle ? Promise.race([reader.read(), idle]) : reader.read());
-      clearTimeout(timer);
-      if (done) return;
-      yield* parser.push(decoder.decode(value, { stream: true }));
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
+};
+
+/** Text body as a stream of SSE events. */
+const sseOf = (res: HttpClientResponse.HttpClientResponse) =>
+  res.stream.pipe(Stream.decodeText(), decodeSse());
+
+export const makeDozzleClient = Effect.fnUntraced(function* (o: DozzleOptions) {
+  const http = (yield* HttpClient.HttpClient).pipe(
+    HttpClient.filterStatus((s) => s !== 404),
+    HttpClient.filterStatusOk,
+  );
+  const requestTimeout = o.requestTimeout ?? '5 seconds';
+  const cacheMs = Duration.toMillis(Duration.fromInputUnsafe(o.cacheTtl ?? '30 seconds'));
+  const maxLen = o.maxLineLength ?? 8192;
+  const url = (path: string, params?: URLSearchParams) => {
+    const u = new URL(path, o.url);
+    if (params) u.search = params.toString();
+    return u.href;
+  };
+
+  const upstreamError = (err: unknown): DozzleError => {
+    const e = err as { _tag?: string; reason?: { _tag?: string; response?: { status: number } } };
+    const status = e.reason?.response?.status;
+    if (status === 404) return new DozzleError({ status: 404, message: 'Dozzle: not found' });
+    if (status !== undefined) {
+      return new DozzleError({ status: 502, message: `Dozzle answered HTTP ${status}` });
+    }
+    const cause = (e.reason as { cause?: unknown } | undefined)?.cause;
+    return new DozzleError({
+      status: 502,
+      message: `Dozzle unreachable: ${errorMessage(cause ?? err)}`,
+    });
+  };
+
+  /** One request; the response body belongs to the caller's scope. */
+  const request = (req: HttpClientRequest.HttpClientRequest) =>
+    http.execute(req).pipe(Effect.mapError(upstreamError));
+
+  let hostCache: { at: number; hosts: DozzleHost[] } | undefined;
+  const hosts = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (hostCache && now - hostCache.at < cacheMs) return hostCache.hosts;
+    const html = yield* request(HttpClientRequest.get(url('./'))).pipe(
+      Effect.flatMap((res) => res.text),
+      Effect.mapError((err) => (err instanceof DozzleError ? err : upstreamError(err))),
+      Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: requestTimeout,
+        orElse: () =>
+          Effect.fail(new DozzleError({ status: 502, message: 'Dozzle did not answer in time' })),
+      }),
+    );
+    const m = /<script[^>]*id="config__json"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+    if (!m) {
+      return yield* new DozzleError({
+        status: 502,
+        message: 'Dozzle page has no config; is DOZZLE_URL the hub root?',
+      });
+    }
+    const config = parseJson(m[1]!) as { hosts?: DozzleHost[] } | undefined;
+    if (config === undefined) {
+      return yield* new DozzleError({ status: 502, message: 'Dozzle config is not valid JSON' });
+    }
+    const list = (config.hosts ?? []).filter(
+      (h) => typeof h?.id === 'string' && typeof h?.name === 'string',
+    );
+    hostCache = { at: now, hosts: list };
+    return list;
+  });
+
+  const resolveHost = Effect.fn('Dozzle.resolveHost')(function* (name: string) {
+    const host = (yield* hosts).find((h) => h.name === name || h.id === name);
+    if (!host)
+      return yield* new DozzleError({ status: 404, message: `Dozzle has no host named "${name}"` });
+    if (host.available === false) {
+      return yield* new DozzleError({
+        status: 502,
+        message: `Dozzle host "${name}" is unavailable`,
+      });
+    }
+    return host.id;
+  });
+
+  const containerCache = new Map<string, { at: number; id: string }>();
+  /** Container id for a name on a host, from Dozzle's container event stream. */
+  const resolveContainer = Effect.fn('Dozzle.resolveContainer')(function* (
+    hostId: string,
+    name: string,
+  ) {
+    const key = `${hostId}/${name}`;
+    const now = yield* Clock.currentTimeMillis;
+    const cached = containerCache.get(key);
+    if (cached && now - cached.at < cacheMs) return cached.id;
+    const seen = new Map<string, DozzleContainer>();
+    const found = yield* request(HttpClientRequest.get(url('api/events/stream'))).pipe(
+      Effect.flatMap((res) =>
+        sseOf(res).pipe(
+          Stream.filter((m) => m.event === 'containers-changed' || m.event === 'container-updated'),
+          Stream.map((m) => {
+            const parsed = parseJson(m.data) as DozzleContainer | DozzleContainer[] | undefined;
+            for (const c of Array.isArray(parsed) ? parsed : parsed ? [parsed] : []) {
+              if (c?.host === hostId && c.name === name) seen.set(c.id, c);
+            }
+            return pick([...seen.values()]);
+          }),
+          Stream.filter((c): c is DozzleContainer => c !== undefined),
+          Stream.runHead,
+          Effect.mapError((err) => (err instanceof DozzleError ? err : upstreamError(err))),
+        ),
+      ),
+      Effect.scoped,
+      // Dozzle keeps the stream open; a container it never mentions is not there.
+      Effect.timeoutOrElse({ duration: requestTimeout, orElse: () => Effect.succeedNone }),
+    );
+    if (Option.isNone(found)) {
+      return yield* new DozzleError({
+        status: 404,
+        message: `Dozzle host has no container named "${name}"`,
+      });
+    }
+    containerCache.set(key, { at: now, id: found.value.id });
+    return found.value.id;
+  });
+
+  /** History (up to `tail` lines) then live lines, rate limited, as outgoing SSE events. */
+  const logEvents = (target: string, tail: number): Stream.Stream<LogEvent> =>
+    Stream.unwrap(
+      Effect.sync(() => {
+        const take = tokenBucket(o.linesPerSecond ?? 50, o.burst ?? 500);
+        const overlap = overlapFilter();
+        let dropped = 0;
+
+        const toLine = (ev: DozzleEvent) =>
+          Effect.gen(function* () {
+            const ts = typeof ev.ts === 'number' ? ev.ts : yield* Clock.currentTimeMillis;
+            if (!overlap.accept(ts, ev.id)) return Option.none<LogEvent>();
+            if (!(yield* take)) {
+              dropped++;
+              return Option.none<LogEvent>();
+            }
+            return Option.some<LogEvent>({
+              event: 'line',
+              data: {
+                ts,
+                level: ev.l ?? 'unknown',
+                stream: ev.s ?? 'stdout',
+                text: lineText(ev, maxLen),
+              },
+            });
+          });
+
+        const params = () => {
+          const p = new URLSearchParams({ container: target, stdout: '1', stderr: '1' });
+          for (const l of LEVELS) p.append('levels', l);
+          return p;
+        };
+
+        const history =
+          tail > 0
+            ? Stream.unwrap(
+                Effect.gen(function* () {
+                  const body = params();
+                  body.set('format', 'jsonl');
+                  body.set('min', String(tail));
+                  const text = yield* request(
+                    HttpClientRequest.post(url('api/containers/logs')).pipe(
+                      HttpClientRequest.bodyUrlParams(body),
+                    ),
+                  ).pipe(
+                    Effect.flatMap((res) => res.text),
+                    Effect.mapError((err) =>
+                      err instanceof DozzleError ? err : upstreamError(err),
+                    ),
+                    Effect.scoped,
+                    Effect.timeoutOrElse({
+                      duration: requestTimeout,
+                      orElse: () =>
+                        Effect.fail(
+                          new DozzleError({
+                            status: 502,
+                            message: 'Dozzle did not answer in time',
+                          }),
+                        ),
+                    }),
+                  );
+                  const lines = text.split('\n').filter(Boolean).slice(-tail);
+                  return Stream.fromIterable(lines).pipe(
+                    Stream.map(parseJson),
+                    // Skip malformed history lines.
+                    Stream.filter((ev): ev is DozzleEvent => typeof ev === 'object' && ev !== null),
+                  );
+                }),
+              )
+            : Stream.empty;
+
+        const live = Stream.unwrap(
+          Effect.gen(function* () {
+            const query = params();
+            query.set(
+              'since',
+              new Date(overlap.lastTs || (yield* Clock.currentTimeMillis)).toISOString(),
+            );
+            const res = yield* request(
+              HttpClientRequest.get(url('api/containers/logs/stream', query)).pipe(
+                HttpClientRequest.accept('text/event-stream'),
+              ),
+            );
+            const events = sseOf(res).pipe(
+              Stream.mapError((err) => upstreamError(err)),
+              Stream.timeoutOrElse({
+                duration: o.idleTimeout ?? '30 seconds',
+                orElse: () =>
+                  Stream.fail(
+                    new DozzleError({
+                      status: 502,
+                      message: 'Log stream failed: Dozzle went quiet',
+                    }),
+                  ),
+              }),
+            );
+            return Stream.concat(
+              Stream.succeed<LogEvent | DozzleEvent>({
+                event: 'status',
+                data: { message: 'live' },
+              }),
+              events.pipe(
+                Stream.flatMap((msg): Stream.Stream<LogEvent | DozzleEvent> => {
+                  if (msg.event === 'message') {
+                    const ev = parseJson(msg.data);
+                    // Skip malformed live lines.
+                    return typeof ev === 'object' && ev !== null
+                      ? Stream.succeed(ev as DozzleEvent)
+                      : Stream.empty;
+                  }
+                  if (msg.event === 'container-event') {
+                    const name =
+                      (parseJson(msg.data) as { name?: string } | undefined)?.name ??
+                      'container event';
+                    return Stream.succeed({
+                      event: 'status',
+                      data: { message: name.replace(/^container-/, 'container ') },
+                    });
+                  }
+                  return Stream.empty;
+                }),
+              ),
+            );
+          }),
+        );
+
+        const lines = Stream.concat(
+          history as Stream.Stream<LogEvent | DozzleEvent, DozzleError>,
+          live,
+        ).pipe(
+          Stream.mapEffect((item) =>
+            'event' in item && typeof item.event === 'string'
+              ? Effect.succeed(Option.some(item as LogEvent))
+              : toLine(item as DozzleEvent),
+          ),
+          Stream.filter(Option.isSome),
+          Stream.map((o) => o.value),
+          Stream.concat(
+            Stream.succeed<LogEvent>({
+              event: 'end',
+              data: { message: 'Dozzle closed the stream' },
+            }),
+          ),
+          Stream.catch((err: DozzleError) =>
+            Stream.fromEffect(
+              Effect.logWarning('log stream failed').pipe(
+                Effect.annotateLogs({ target, error: err.message }),
+                Effect.as<LogEvent>({ event: 'error', data: { message: err.message } }),
+              ),
+            ),
+          ),
+        );
+
+        // Lines skipped by the rate limit are reported once a second.
+        const report: Stream.Stream<LogEvent> = Stream.tick('1 second').pipe(
+          Stream.drop(1),
+          Stream.filter(() => dropped > 0),
+          Stream.map(() => {
+            const count = dropped;
+            dropped = 0;
+            return { event: 'dropped', data: { count } } as const;
+          }),
+        );
+
+        return lines.pipe(Stream.merge(report, { haltStrategy: 'left' }));
+      }),
+    );
+
+  return { resolveHost, resolveContainer, logEvents };
+});
+
+/** `/api/logs`: only containers declared in the data, at most `maxStreams` at a time. */
+export class Logs extends Context.Service<
+  Logs,
+  {
+    /** Fails with the HTTP status and message to answer; the stream holds a slot until it ends. */
+    readonly open: (
+      host: string,
+      container: string,
+      tail: number,
+    ) => Effect.Effect<Stream.Stream<LogEvent>, DozzleError>;
+  }
+>()('system-map/Logs') {
+  static readonly make = Effect.fnUntraced(function* (
+    o: DozzleOptions,
+    allowed: (host: string, container: string) => Effect.Effect<boolean>,
+  ) {
+    const client = yield* makeDozzleClient(o);
+    const maxStreams = o.maxStreams ?? 8;
+    const slots = yield* Semaphore.make(maxStreams);
+    const open = Effect.fn('Logs.open')(function* (host: string, container: string, tail: number) {
+      if (!(yield* allowed(host, container))) {
+        return yield* new DozzleError({
+          status: 404,
+          message: 'This container is not declared in the data (logs.dozzle)',
+        });
+      }
+      if (!(yield* slots.takeIfAvailable(1))) {
+        return yield* new DozzleError({
+          status: 429,
+          message: `Too many log streams (limit ${maxStreams})`,
+        });
+      }
+      const release = slots.release(1);
+      const target = yield* Effect.gen(function* () {
+        const hostId = yield* client.resolveHost(host);
+        const containerId = yield* client.resolveContainer(hostId, container);
+        return `${hostId}/${containerId}`;
+      }).pipe(Effect.onError(() => release));
+      return client
+        .logEvents(target, Math.min(tail, o.maxTail ?? 500))
+        .pipe(Stream.ensuring(release));
+    });
+    return Logs.of({ open });
+  });
+
+  /** Dozzle when `DOZZLE_URL` is set; otherwise every request answers 503. */
+  static readonly layer = Layer.effect(
+    Logs,
+    Effect.gen(function* () {
+      const config = yield* AppConfig;
+      if (Option.isNone(config.dozzleUrl)) {
+        return Logs.of({
+          open: () =>
+            Effect.fail(new DozzleError({ status: 503, message: 'Dozzle is not configured' })),
+        });
+      }
+      const store = yield* DataStore;
+      // Only containers declared in the current data may be streamed.
+      const allowed = (host: string, container: string) =>
+        Effect.map(store.current, (snap) =>
+          Option.match(snap, {
+            onNone: () => false,
+            onSome: (s) =>
+              s.model.services.some(
+                (v) => v.logs?.dozzle?.host === host && v.logs.dozzle.container === container,
+              ),
+          }),
+        );
+      return yield* Logs.make({ url: config.dozzleUrl.value }, allowed);
+    }),
+  );
 }

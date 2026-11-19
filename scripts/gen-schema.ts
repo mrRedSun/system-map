@@ -1,4 +1,4 @@
-/** Write (or with --check, verify) schema/system-map.schema.json from the zod schema. */
+/** Write (or with --check, verify) schema/system-map.schema.json from the Effect schema. */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { toJsonSchema } from '../src/shared/schema.js';

@@ -18,7 +18,8 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayName, exposureOf, statusOf, type ModelIndex } from '@/lib/model-index';
 import { useNarrow } from '@/lib/media';
-import { usePersisted } from '@/lib/persisted';
+import { useAtom } from '@effect/atom-react';
+import { edgeKindsAtom, showRetiredAtom } from '@/lib/prefs';
 import { GROUP_ICONS, iconFor, kindLabel } from '@/lib/visuals';
 import type { GraphMode } from '@/lib/router';
 import { cn } from '@/lib/utils';
@@ -27,7 +28,6 @@ import { EDGE_STYLE } from './edge-style';
 import { layoutTopology, type Box } from './layout';
 import { ContainerNode, EntityNode, type GraphNode } from './nodes';
 import {
-  DEFAULT_EDGE_KINDS,
   DRAWN_EDGE_KINDS,
   GROUPS,
   ancestorsOf,
@@ -50,11 +50,6 @@ export interface GraphViewProps {
   onMode: (mode: GraphMode) => void;
 }
 
-const isEdgeKinds = (v: unknown): v is Record<DrawnEdgeKind, boolean> =>
-  typeof v === 'object' &&
-  v !== null &&
-  DRAWN_EDGE_KINDS.every((k) => typeof (v as Record<string, unknown>)[k] === 'boolean');
-const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 const NODE_TYPES = { entity: EntityNode, container: ContainerNode };
 
 export function GraphView(props: GraphViewProps) {
@@ -69,8 +64,8 @@ export function GraphView(props: GraphViewProps) {
 /** Containment view: host → guests → services, plus routes, monitors and backups. */
 function InfraGraph({ model, index, selected, onSelect, healthOf, mode, onMode }: GraphViewProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => defaultExpanded(model));
-  const [edgeKinds, setEdgeKinds] = usePersisted('edge-kinds', DEFAULT_EDGE_KINDS, isEdgeKinds);
-  const [showRetired, setShowRetired] = usePersisted('show-retired', false, isBool);
+  const [edgeKinds, setEdgeKinds] = useAtom(edgeKindsAtom);
+  const [showRetired, setShowRetired] = useAtom(showRetiredAtom);
   const [focus, setFocus] = useState<string | undefined>(undefined);
   const { fitView } = useReactFlow();
   const vertical = useNarrow();

@@ -33,3 +33,11 @@ describe('published JSON Schema', () => {
     expect(check({ nodes: [] })).toBe(false);
   });
 });
+
+describe('section lists', () => {
+  it('agree between the schema and the client-side model module', async () => {
+    const { SECTIONS } = await import('../src/shared/model.js');
+    const { SECTION_KEYS } = await import('../src/shared/schema.js');
+    expect(SECTIONS).toEqual(SECTION_KEYS);
+  });
+});

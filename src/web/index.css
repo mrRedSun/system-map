@@ -130,3 +130,45 @@
     @apply font-sans;
   }
 }
+
+/* Edge colours, readable on both themes. */
+:root {
+  --edge-calls: oklch(0.55 0.17 255);
+  --edge-routes: oklch(0.68 0.17 55);
+  --edge-mounts: oklch(0.6 0.11 185);
+  --edge-monitors: oklch(0.6 0.15 145);
+  --edge-backups: oklch(0.55 0.17 300);
+  --health-up: oklch(0.68 0.17 150);
+  --health-down: oklch(0.63 0.22 25);
+  --health-pending: oklch(0.78 0.15 80);
+  --health-maintenance: oklch(0.62 0.15 250);
+}
+.dark {
+  --edge-calls: oklch(0.7 0.14 255);
+  --edge-routes: oklch(0.78 0.15 65);
+  --edge-mounts: oklch(0.74 0.1 185);
+  --edge-monitors: oklch(0.74 0.14 145);
+  --edge-backups: oklch(0.72 0.14 300);
+}
+
+/* React Flow follows the shadcn palette. */
+.react-flow {
+  --xy-background-color: var(--background);
+  --xy-node-background-color: transparent;
+  --xy-node-border: none;
+  --xy-node-boxshadow-hover: none;
+  --xy-node-boxshadow-selected: none;
+  --xy-minimap-background-color: var(--card);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--muted);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-attribution-background-color: transparent;
+}
+.react-flow__node {
+  padding: 0;
+  border-radius: 0;
+}
+.react-flow__attribution a {
+  color: var(--muted-foreground);
+}

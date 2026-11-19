@@ -41,5 +41,9 @@ export function useTheme() {
     setThemeState(next);
   }, []);
 
-  return { theme, setTheme };
+  const dark =
+    theme === 'dark' ||
+    (theme === 'system' && typeof matchMedia === 'function' && matchMedia(QUERY).matches);
+  const toggle = useCallback(() => setTheme(dark ? 'light' : 'dark'), [dark, setTheme]);
+  return { theme, setTheme, dark, toggle };
 }
